@@ -4,3 +4,4 @@ gunicorn==26.2.0
 pyswisseph==2.10.3.2
 requests==2.34.2
 indic-transliteration==2.3.82
+Pillow==12.3.0
