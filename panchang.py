@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import html
+import io
 import json
 import math
 import os
@@ -31,6 +32,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 import swisseph as swe
+
+try:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+except Exception:  # The static embedded social image remains a safe fallback.
+    Image = ImageDraw = ImageFilter = ImageFont = None
 from flask import Flask, Response, jsonify, make_response, redirect, request
 from jinja2 import BaseLoader, Environment, select_autoescape
 
@@ -46,7 +52,7 @@ app = Flask(__name__)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024)
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -54,6 +60,8 @@ DEFAULT_PLACE = {
     "timezone": "Asia/Kolkata",
     "country": "India",
 }
+TIMELINE_PAST_ITEMS = 4
+TIMELINE_FUTURE_ITEMS = 12
 
 UTC = timezone.utc
 IST = ZoneInfo("Asia/Kolkata")
@@ -134,6 +142,11 @@ EN_TEXT = {
     "searching": "Searching…",
     "not_available": "Not available",
     "solar_unavailable": "No local sunrise/sunset for this date and latitude",
+    "refresh": "Refresh Panchang",
+    "refreshing": "Refreshing Panchang…",
+    "refreshed": "Panchang refreshed.",
+    "auto_refresh": "Automatically refreshes every minute",
+    "location_fallback": "Location is unavailable, so Ujjain is being shown.",
 }
 
 TEXT_OVERRIDES: dict[str, dict[str, str]] = {
@@ -251,6 +264,22 @@ TEXT_OVERRIDES: dict[str, dict[str, str]] = {
     },
 }
 
+REFRESH_TEXT: dict[str, dict[str, str]] = {
+    "hi": {"refresh": "पंचांग ताज़ा करें", "refreshing": "पंचांग ताज़ा हो रहा है…", "refreshed": "पंचांग ताज़ा हो गया।"},
+    "mr": {"refresh": "पंचांग रीफ्रेश करा", "refreshing": "पंचांग रीफ्रेश होत आहे…", "refreshed": "पंचांग रीफ्रेश झाले."},
+    "gu": {"refresh": "પંચાંગ તાજું કરો", "refreshing": "પંચાંગ તાજું થઈ રહ્યું છે…", "refreshed": "પંચાંગ તાજું થયું."},
+    "bn": {"refresh": "পঞ্জিকা রিফ্রেশ করুন", "refreshing": "পঞ্জিকা রিফ্রেশ হচ্ছে…", "refreshed": "পঞ্জিকা রিফ্রেশ হয়েছে।"},
+    "ta": {"refresh": "பஞ்சாங்கத்தை புதுப்பிக்கவும்", "refreshing": "பஞ்சாங்கம் புதுப்பிக்கப்படுகிறது…", "refreshed": "பஞ்சாங்கம் புதுப்பிக்கப்பட்டது."},
+    "te": {"refresh": "పంచాంగాన్ని రిఫ్రెష్ చేయండి", "refreshing": "పంచాంగం రిఫ్రెష్ అవుతోంది…", "refreshed": "పంచాంగం రిఫ్రెష్ అయింది."},
+    "kn": {"refresh": "ಪಂಚಾಂಗವನ್ನು ರಿಫ್ರೆಶ್ ಮಾಡಿ", "refreshing": "ಪಂಚಾಂಗ ರಿಫ್ರೆಶ್ ಆಗುತ್ತಿದೆ…", "refreshed": "ಪಂಚಾಂಗ ರಿಫ್ರೆಶ್ ಆಯಿತು."},
+    "ml": {"refresh": "പഞ്ചാംഗം പുതുക്കുക", "refreshing": "പഞ്ചാംഗം പുതുക്കുന്നു…", "refreshed": "പഞ്ചാംഗം പുതുക്കി."},
+    "pa": {"refresh": "ਪੰਚਾਂਗ ਤਾਜ਼ਾ ਕਰੋ", "refreshing": "ਪੰਚਾਂਗ ਤਾਜ਼ਾ ਹੋ ਰਿਹਾ ਹੈ…", "refreshed": "ਪੰਚਾਂਗ ਤਾਜ਼ਾ ਹੋ ਗਿਆ।"},
+    "or": {"refresh": "ପଞ୍ଚାଙ୍ଗ ସତେଜ କରନ୍ତୁ", "refreshing": "ପଞ୍ଚାଙ୍ଗ ସତେଜ ହେଉଛି…", "refreshed": "ପଞ୍ଚାଙ୍ଗ ସତେଜ ହେଲା।"},
+    "ne": {"refresh": "पञ्चाङ्ग रिफ्रेस गर्नुहोस्", "refreshing": "पञ्चाङ्ग रिफ्रेस हुँदैछ…", "refreshed": "पञ्चाङ्ग रिफ्रेस भयो।"},
+    "sa": {"refresh": "पञ्चाङ्गं नवीकरोतु", "refreshing": "पञ्चाङ्गं नवीक्रियते…", "refreshed": "पञ्चाङ्गं नवीकृतम्।"},
+}
+for _language_code, _refresh_values in REFRESH_TEXT.items():
+    TEXT_OVERRIDES.setdefault(_language_code, {}).update(_refresh_values)
 
 def ui_text(lang: str) -> dict[str, str]:
     result = dict(EN_TEXT)
@@ -523,6 +552,15 @@ def format_header(value: datetime, place: str, lang: str) -> str:
     return f"{tr(lang, 'panchang')} ({place} - {format_date_label(value.date(), lang)} - {format_clock(value)})"
 
 
+def format_compact_header(value: datetime, place: str, lang: str) -> str:
+    # The mobile header preserves place, date and time while using fewer glyphs
+    # so it can stay large enough for older readers on narrow screens.
+    date_text = f"{value.day}/{value.month}"
+    compact_hour = value.hour % 12 or 12
+    compact_clock = f"{compact_hour}:{value.minute:02d}{'a' if value.hour < 12 else 'p'}"
+    return f"{tr(lang, 'panchang')} · {place} · {date_text} · {compact_clock}"
+
+
 def format_point(value: datetime, reference: date) -> str:
     if value.date() == reference:
         return format_clock(value)
@@ -757,14 +795,14 @@ def interval_item(
     }
 
 
-def make_category_timeline(kind: str, at: datetime, latitude: float, longitude: float, lang: str, count_each_side: int = 3) -> list[dict[str, Any]]:
+def make_category_timeline(kind: str, at: datetime, latitude: float, longitude: float, lang: str, before: int = TIMELINE_PAST_ITEMS, after: int = TIMELINE_FUTURE_ITEMS) -> list[dict[str, Any]]:
     current_index = category_index(kind, at, latitude, longitude)
     current_start = find_category_boundary(kind, at, -1, latitude, longitude)
     current_end = find_category_boundary(kind, at, 1, latitude, longitude)
     raw: list[tuple[int, datetime, datetime, bool]] = [(current_index, current_start, current_end, True)]
 
     cursor_start = current_start
-    for _ in range(count_each_side):
+    for _ in range(before):
         probe = shift_instant(cursor_start, -timedelta(minutes=2))
         idx = category_index(kind, probe, latitude, longitude)
         start = find_category_boundary(kind, probe, -1, latitude, longitude)
@@ -772,7 +810,7 @@ def make_category_timeline(kind: str, at: datetime, latitude: float, longitude: 
         cursor_start = start
 
     cursor_end = current_end
-    for _ in range(count_each_side):
+    for _ in range(after):
         probe = shift_instant(cursor_end, timedelta(minutes=2))
         idx = category_index(kind, probe, latitude, longitude)
         end = find_category_boundary(kind, probe, 1, latitude, longitude)
@@ -855,7 +893,7 @@ def point_item(title: str, value: datetime | None, at: datetime, lang: str, focu
 
 def make_sun_timeline(event: str, at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     items = []
-    for offset in range(-3, 4):
+    for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
         day = at.date() + timedelta(days=offset)
         value = sun_event(day, latitude, longitude, tz_name, event)
         weekday = EN_WEEKDAYS[day.weekday()]
@@ -888,7 +926,7 @@ def choghadiya_quality(key: str) -> str:
 
 def all_choghadiya_segments(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
-    for offset in range(-3, 4):
+    for offset in range(-4, 6):
         day = at.date() + timedelta(days=offset)
         sunrise, sunset = sun_pair(day, latitude, longitude, tz_name)
         next_sunrise = sun_event(day + timedelta(days=1), latitude, longitude, tz_name, "rise")
@@ -909,7 +947,7 @@ def all_choghadiya_segments(at: datetime, latitude: float, longitude: float, tz_
     return sorted(segments, key=lambda x: x["start"].timestamp())
 
 
-def select_timeline_window(segments: list[dict[str, Any]], at: datetime, before: int = 4, after: int = 4) -> list[dict[str, Any]]:
+def select_timeline_window(segments: list[dict[str, Any]], at: datetime, before: int = TIMELINE_PAST_ITEMS, after: int = TIMELINE_FUTURE_ITEMS) -> list[dict[str, Any]]:
     if not segments:
         return []
     index = next((i for i, item in enumerate(segments) if instant_contains(item["start"], at, item["end"])), None)
@@ -920,23 +958,31 @@ def select_timeline_window(segments: list[dict[str, Any]], at: datetime, before:
     return segments[start:end]
 
 
-def unavailable_timeline(lang: str) -> list[dict[str, Any]]:
-    return [{
-        "title": tr(lang, "not_available"),
-        "time": tr(lang, "solar_unavailable"),
-        "start": "",
-        "end": "",
-        "current": True,
-        "quality": "neutral",
-        "detail": "",
-        "badge": tr(lang, "selected"),
-    }]
+def unavailable_timeline(at: datetime, lang: str) -> list[dict[str, Any]]:
+    # Polar regions can have no sunrise or sunset for several days. Keep the
+    # interaction contract intact with four past, one selected and twelve
+    # future date cards while clearly stating that solar divisions are absent.
+    items: list[dict[str, Any]] = []
+    for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
+        day = at.date() + timedelta(days=offset)
+        title = f"{day.day} {EN_MONTHS[day.month - 1]} · {tr(lang, 'not_available')}"
+        items.append({
+            "title": title,
+            "time": tr(lang, "solar_unavailable"),
+            "start": "",
+            "end": "",
+            "current": offset == 0,
+            "quality": "neutral",
+            "detail": "",
+            "badge": tr(lang, "selected") if offset == 0 else "",
+        })
+    return items
 
 
 def make_choghadiya_timeline(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     segments = select_timeline_window(all_choghadiya_segments(at, latitude, longitude, tz_name, lang), at)
     if not segments:
-        return unavailable_timeline(lang)
+        return unavailable_timeline(at, lang)
     items = []
     for seg in segments:
         title = localize_sanskrit(CHOGHADIYA_NAMES[seg["key"]], lang)
@@ -960,7 +1006,7 @@ def hora_quality(planet: str) -> str:
 
 def all_hora_segments(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
-    for offset in range(-3, 4):
+    for offset in range(-4, 6):
         day = at.date() + timedelta(days=offset)
         sunrise, sunset = sun_pair(day, latitude, longitude, tz_name)
         next_sunrise = sun_event(day + timedelta(days=1), latitude, longitude, tz_name, "rise")
@@ -991,7 +1037,7 @@ def all_hora_segments(at: datetime, latitude: float, longitude: float, tz_name: 
 def make_hora_timeline(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     segments = select_timeline_window(all_hora_segments(at, latitude, longitude, tz_name, lang), at)
     if not segments:
-        return unavailable_timeline(lang)
+        return unavailable_timeline(at, lang)
     items = []
     hora_pair = ("Horā", "Hora")
     for seg in segments:
@@ -1075,11 +1121,11 @@ def is_daylight(moment: datetime, latitude: float, longitude: float, tz_name: st
 
 def all_period_segments(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     specials: list[dict[str, Any]] = []
-    for offset in range(-3, 4):
+    for offset in range(-4, 7):
         specials.extend(special_periods_for_day(at.date() + timedelta(days=offset), latitude, longitude, tz_name))
 
-    range_start = datetime.combine(at.date() - timedelta(days=2), dt_time.min, tzinfo=at.tzinfo)
-    range_end = datetime.combine(at.date() + timedelta(days=3), dt_time.min, tzinfo=at.tzinfo)
+    range_start = datetime.combine(at.date() - timedelta(days=3), dt_time.min, tzinfo=at.tzinfo)
+    range_end = datetime.combine(at.date() + timedelta(days=7), dt_time.min, tzinfo=at.tzinfo)
     boundary_by_stamp: dict[float, datetime] = {
         range_start.timestamp(): range_start,
         range_end.timestamp(): range_end,
@@ -1119,10 +1165,10 @@ def all_period_segments(at: datetime, latitude: float, longitude: float, tz_name
 def make_period_timeline(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
     sunrise, sunset = sun_pair(at.date(), latitude, longitude, tz_name)
     if not sunrise or not sunset:
-        return unavailable_timeline(lang)
-    segments = select_timeline_window(all_period_segments(at, latitude, longitude, tz_name, lang), at, before=4, after=4)
+        return unavailable_timeline(at, lang)
+    segments = select_timeline_window(all_period_segments(at, latitude, longitude, tz_name, lang), at)
     if not segments:
-        return unavailable_timeline(lang)
+        return unavailable_timeline(at, lang)
     items: list[dict[str, Any]] = []
     for seg in segments:
         names = [localize_sanskrit(PERIOD_NAMES[key], lang) for key in seg["keys"]]
@@ -1182,6 +1228,11 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         "current": format_header(at, context["place"], lang),
         "next": format_header(at + timedelta(days=1), context["place"], lang),
     }
+    headers_compact = {
+        "previous": format_compact_header(at - timedelta(days=1), context["place"], lang),
+        "current": format_compact_header(at, context["place"], lang),
+        "next": format_compact_header(at + timedelta(days=1), context["place"], lang),
+    }
     return {
         "app": {"name": APP_NAME, "version": APP_VERSION},
         "query": {
@@ -1190,6 +1241,12 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
             "language": lang, "live": context["live"], "country": context["country"],
         },
         "headers": headers,
+        "headers_compact": headers_compact,
+        "default_location": {
+            "name": DEFAULT_PLACE["name"], "lat": DEFAULT_PLACE["latitude"], "lon": DEFAULT_PLACE["longitude"],
+            "timezone": DEFAULT_PLACE["timezone"], "country": DEFAULT_PLACE["country"], "slug": "ujjain",
+        },
+        "timeline_window": {"past": TIMELINE_PAST_ITEMS, "upcoming": TIMELINE_FUTURE_ITEMS},
         "sections": sections,
         "summary": summary,
         "ui": ui_text(lang),
@@ -1237,6 +1294,18 @@ def api_url(context: dict[str, Any]) -> str:
     return f"{site_root()}/api/panchang?{urlencode(params)}"
 
 
+def og_image_url(context: dict[str, Any]) -> str:
+    params = {
+        "place": context["place"], "lat": f"{context['latitude']:.6f}", "lon": f"{context['longitude']:.6f}",
+        "tz": context["timezone"], "date": context["date"].isoformat(),
+        "time": context["time"].strftime("%H:%M"), "lang": context["lang"], "live": "0",
+        "mode": "live" if context.get("live") else "selected", "v": APP_VERSION,
+    }
+    if context.get("country"):
+        params["country"] = context["country"]
+    return f"{site_root()}/og.png?{urlencode(params)}"
+
+
 def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
     lang = context["lang"]
     summary = data["summary"]
@@ -1264,7 +1333,7 @@ def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]
     canonical = canonical_url(context)
     alternates = {code: canonical_url(context, code) for code in LANGUAGES}
     alternates["x-default"] = canonical_url(context, "en")
-    return {"title": title[:200], "description": description[:320], "canonical": canonical, "alternates": alternates}
+    return {"title": title[:200], "description": description[:320], "canonical": canonical, "alternates": alternates, "og_image": og_image_url(context)}
 
 
 def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, Any]) -> dict[str, Any]:
@@ -1275,6 +1344,10 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
     app_id = f"{root}#webapp"
     website_id = f"{root}#website"
     publisher_id = f"{root}#publisher"
+    social_image = {
+        "@type": "ImageObject", "url": seo["og_image"], "contentUrl": seo["og_image"],
+        "width": 1200, "height": 630, "caption": seo["title"],
+    }
     observations: list[dict[str, Any]] = []
     variables: list[dict[str, Any]] = []
     item_list: list[dict[str, Any]] = []
@@ -1342,7 +1415,7 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "@type": "WebApplication", "@id": app_id, "name": APP_NAME, "url": root,
             "applicationCategory": "LifestyleApplication", "applicationSubCategory": "Hindu Panchang and Vedic calendar",
             "operatingSystem": "Any", "browserRequirements": "Requires a modern browser with JavaScript for interactive editing; core Panchang content is server-rendered.",
-            "softwareVersion": APP_VERSION, "isAccessibleForFree": True,
+            "softwareVersion": APP_VERSION, "isAccessibleForFree": True, "image": social_image, "screenshot": seo["og_image"],
             "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
             "featureList": [
                 "Location-aware Panchang", "Tithi timeline", "Nakshatra timeline", "Yoga and Karana timelines",
@@ -1355,7 +1428,7 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "@type": "WebPage", "@id": page_id, "url": seo["canonical"], "name": seo["title"],
             "headline": seo["title"], "description": seo["description"], "inLanguage": context["lang"],
             "isPartOf": {"@id": website_id}, "about": {"@id": place_id}, "mainEntity": {"@id": dataset_id},
-            "dateModified": data["generated_at"], "isAccessibleForFree": True,
+            "dateModified": data["generated_at"], "isAccessibleForFree": True, "primaryImageOfPage": social_image,
             "speakable": {"@type": "SpeakableSpecification", "cssSelector": ["#currentHeaderText", ".metric-row"]},
             "breadcrumb": {"@id": f"{seo['canonical']}#breadcrumb"},
             "potentialAction": [
@@ -1365,7 +1438,7 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
         {
             "@type": "Dataset", "@id": dataset_id, "name": seo["title"], "description": seo["description"],
             "url": seo["canonical"], "creator": {"@id": app_id}, "publisher": {"@id": publisher_id},
-            "dateModified": data["generated_at"], "inLanguage": context["lang"], "isAccessibleForFree": True,
+            "dateModified": data["generated_at"], "inLanguage": context["lang"], "isAccessibleForFree": True, "image": social_image,
             "temporalCoverage": context["date"].isoformat(), "spatialCoverage": {"@id": place_id},
             "measurementTechnique": data["method"], "variableMeasured": variables,
             "distribution": {
@@ -1412,27 +1485,35 @@ def safe_script_json(value: Any) -> str:
 CSS = r"""
 :root {
   color-scheme: dark;
-  --bg-0: #06111d;
-  --bg-1: #0b1c2c;
-  --surface: rgba(17, 39, 57, .84);
-  --surface-strong: rgba(22, 48, 69, .96);
-  --surface-soft: rgba(255, 255, 255, .055);
-  --line: rgba(190, 221, 240, .14);
-  --line-strong: rgba(190, 221, 240, .24);
-  --text: #f7fbff;
-  --muted: #a8bfce;
-  --accent: #ffc65c;
-  --accent-2: #7be2f3;
-  --good: #58ddb0;
-  --good-bg: rgba(53, 203, 153, .14);
-  --bad: #ff8b91;
-  --bad-bg: rgba(255, 105, 116, .14);
-  --neutral: #b9b7ff;
-  --shadow: 0 18px 55px rgba(0, 0, 0, .33);
-  --radius: clamp(12px, 2.2vmin, 22px);
-  --gap: clamp(3px, .62vh, 8px);
-  --pad: clamp(6px, 1.2vmin, 16px);
-  --label-width: clamp(98px, 26vw, 275px);
+  --bg-0: #04131c;
+  --bg-1: #082333;
+  --bg-2: #0e3042;
+  --surface: rgba(17, 43, 59, .94);
+  --surface-strong: rgba(20, 51, 70, .98);
+  --surface-soft: rgba(255, 255, 255, .065);
+  --line: rgba(201, 226, 238, .17);
+  --line-strong: rgba(201, 226, 238, .31);
+  --text: #fbfdff;
+  --muted: #c3d3dd;
+  --gold: #f4bd4f;
+  --cyan: #69ddea;
+  --mint: #62ddb4;
+  --rose: #ff8995;
+  --lavender: #b9b4ff;
+  --peach: #ffb39f;
+  --good: var(--mint);
+  --good-bg: rgba(73, 201, 158, .18);
+  --bad: var(--rose);
+  --bad-bg: rgba(240, 104, 121, .18);
+  --neutral: var(--lavender);
+  --shadow: 0 18px 58px rgba(0, 0, 0, .34);
+  --radius: clamp(11px, 1.8vmin, 20px);
+  --gap: clamp(2px, .48vh, 7px);
+  --pad: clamp(5px, .9vmin, 12px);
+  --header-height: clamp(54px, 8.4vh, 90px);
+  --label-width: clamp(108px, 25vw, 290px);
+  --header-left-space: clamp(48px, 6.4vw, 68px);
+  --header-right-space: clamp(100px, 12vw, 136px);
 }
 
 * { box-sizing: border-box; }
@@ -1442,9 +1523,10 @@ body {
   min-height: 100dvh;
   color: var(--text);
   background:
-    radial-gradient(85vmax 55vmax at 8% -12%, rgba(255, 183, 66, .14), transparent 55%),
-    radial-gradient(70vmax 48vmax at 108% 106%, rgba(73, 205, 220, .13), transparent 58%),
-    linear-gradient(145deg, var(--bg-0), var(--bg-1));
+    radial-gradient(75vmax 50vmax at 2% -16%, rgba(244, 189, 79, .17), transparent 56%),
+    radial-gradient(58vmax 46vmax at 103% 4%, rgba(105, 221, 234, .14), transparent 58%),
+    radial-gradient(52vmax 40vmax at 80% 112%, rgba(185, 180, 255, .10), transparent 62%),
+    linear-gradient(145deg, var(--bg-0), var(--bg-1) 52%, #071a27);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
     "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Tamil", "Noto Sans Telugu", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -1457,286 +1539,353 @@ button { -webkit-tap-highlight-color: transparent; }
   position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0;
 }
 .ambient::before, .ambient::after {
-  content: ""; position: absolute; border-radius: 999px; filter: blur(1px); opacity: .75;
+  content: ""; position: absolute; border-radius: 50%; opacity: .78;
 }
 .ambient::before {
-  width: 34vmax; height: 34vmax; left: -19vmax; top: 21%;
-  border: 1px solid rgba(255, 198, 92, .12); box-shadow: 0 0 80px rgba(255, 198, 92, .04) inset;
+  width: 42vmax; height: 42vmax; left: -25vmax; top: 17%;
+  border: 1px solid rgba(244, 189, 79, .13); box-shadow: 0 0 95px rgba(244, 189, 79, .05) inset;
 }
 .ambient::after {
-  width: 27vmax; height: 27vmax; right: -15vmax; top: 8%;
-  border: 1px solid rgba(123, 226, 243, .11); box-shadow: 0 0 80px rgba(123, 226, 243, .04) inset;
+  width: 34vmax; height: 34vmax; right: -21vmax; top: 9%;
+  border: 1px solid rgba(105, 221, 234, .14); box-shadow: 0 0 90px rgba(105, 221, 234, .05) inset;
 }
 
 .app-shell {
-  position: relative; z-index: 1; width: 100%; height: 100dvh; max-width: 1680px; margin: 0 auto;
-  padding: var(--pad); display: grid; grid-template-rows: clamp(44px, 8.2vh, 92px) minmax(0, 1fr);
+  position: relative; z-index: 1; width: 100%; height: 100dvh; max-width: 1920px; margin: 0 auto;
+  padding: var(--pad); display: grid; grid-template-rows: var(--header-height) minmax(0, 1fr);
   gap: var(--gap); isolation: isolate;
 }
 
 .day-carousel {
-  min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line-strong);
-  border-radius: var(--radius); background: linear-gradient(120deg, rgba(255, 196, 79, .13), rgba(20, 48, 67, .88) 38%, rgba(74, 205, 220, .09));
-  box-shadow: var(--shadow); position: relative;
+  min-width: 0; min-height: 0; overflow: hidden; border: 1px solid rgba(105, 221, 234, .30);
+  border-radius: var(--radius);
+  background: linear-gradient(112deg, rgba(244, 189, 79, .22), rgba(22, 49, 59, .95) 29%, rgba(9, 38, 54, .98) 63%, rgba(105, 221, 234, .16));
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.06); position: relative;
 }
 .day-carousel::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(90deg, rgba(255, 198, 92, .08), transparent 22%, transparent 78%, rgba(123, 226, 243, .07));
+  background:
+    radial-gradient(35% 145% at 0% 50%, rgba(255, 222, 143, .11), transparent 72%),
+    radial-gradient(34% 145% at 100% 50%, rgba(105, 221, 234, .10), transparent 72%);
 }
 .day-rail {
-  position: relative; display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
+  position: relative; z-index: 1; display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
   scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; touch-action: pan-x;
 }
 .day-rail::-webkit-scrollbar, .timeline::-webkit-scrollbar { display: none; }
 .day-panel {
   flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: center; scroll-snap-stop: always;
-  display: grid; place-items: center; padding: 0 clamp(13px, 5vw, 84px);
+  display: grid; place-items: center; padding: 0 calc(var(--header-right-space) + 8px) 0 calc(var(--header-left-space) + 8px);
 }
 .day-title {
   display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: hidden;
-  font-size: clamp(14px, 2.35vw, 38px); line-height: 1; font-weight: 790; letter-spacing: -.035em;
-  text-shadow: 0 2px 22px rgba(0, 0, 0, .28); font-variant-numeric: tabular-nums;
+  font-size: clamp(17px, 2.55vw, 42px); line-height: 1; font-weight: 850; letter-spacing: -.04em;
+  text-shadow: 0 3px 26px rgba(0, 0, 0, .32); font-variant-numeric: tabular-nums;
 }
+.header-compact { display: none; }
 .day-panel[data-position="current"] .day-title { color: var(--text); }
 .day-panel[data-position="previous"] .day-title,
-.day-panel[data-position="next"] .day-title { color: #d1e1ea; }
-.day-edge {
-  position: absolute; top: 50%; z-index: 2; transform: translateY(-50%); color: var(--muted); opacity: .68;
-  font-size: clamp(13px, 2vw, 25px); pointer-events: none; filter: drop-shadow(0 2px 4px rgba(0,0,0,.3));
+.day-panel[data-position="next"] .day-title { color: #dbe8ee; }
+
+.header-control {
+  min-width: 44px; min-height: 44px; border: 1px solid rgba(218, 234, 241, .18); border-radius: 999px;
+  display: grid; place-items: center; color: var(--text); background: rgba(4, 19, 28, .55); cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.04);
+  transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .16s ease;
+  backdrop-filter: blur(8px);
 }
-.day-edge.left { left: clamp(9px, 1.5vw, 20px); }
-.day-edge.right { right: clamp(9px, 1.5vw, 20px); }
+.header-control:hover { transform: translateY(-1px); border-color: rgba(105,221,234,.46); background: rgba(18, 52, 68, .88); }
+.header-control:active { transform: translateY(1px) scale(.97); }
+.header-control:disabled { opacity: .55; cursor: wait; }
+.previous-control {
+  position: absolute; z-index: 5; left: clamp(6px, .8vw, 12px); top: 50%; transform: translateY(-50%);
+  width: clamp(38px, 5.2vmin, 50px); height: clamp(38px, 5.2vmin, 50px); color: #ffe3a1;
+  border-color: rgba(244,189,79,.26); background: rgba(76, 61, 31, .34); font-size: clamp(26px, 3.3vmin, 36px); line-height: 1;
+}
+.previous-control:hover { transform: translateY(-51%); border-color: rgba(244,189,79,.55); background: rgba(99, 75, 30, .48); }
+.previous-control:active { transform: translateY(-49%) scale(.97); }
+.header-actions {
+  position: absolute; z-index: 6; right: clamp(6px, .8vw, 12px); top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; gap: clamp(4px, .5vw, 8px);
+}
+.header-actions .header-control { position: relative; width: clamp(38px, 5.2vmin, 50px); height: clamp(38px, 5.2vmin, 50px); }
+.next-control { color: #ffe3a1; border-color: rgba(244,189,79,.26); background: rgba(76, 61, 31, .34); font-size: clamp(26px, 3.3vmin, 36px); line-height: 1; }
+.next-control:hover { border-color: rgba(244,189,79,.55); background: rgba(99, 75, 30, .48); }
+.refresh-button { color: #07222b; border-color: rgba(163,241,249,.72) !important; background: linear-gradient(145deg, #b8f4f6, var(--cyan) 58%, #44baca) !important; box-shadow: 0 8px 26px rgba(0,0,0,.28), 0 0 0 4px rgba(105,221,234,.08); }
+.refresh-button svg { width: 51%; height: 51%; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.refresh-button.is-refreshing svg { animation: refresh-spin .72s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 .live-dot {
-  position: absolute; right: clamp(22px, 3.3vw, 52px); top: clamp(6px, .8vh, 11px); z-index: 3;
-  display: inline-flex; align-items: center; gap: 5px; color: var(--accent-2); font-size: clamp(7px, 1.05vh, 11px);
-  font-weight: 850; letter-spacing: .12em; text-transform: uppercase; pointer-events: none;
+  position: absolute; z-index: 4; left: calc(var(--header-left-space) + 10px); bottom: clamp(5px, .65vh, 9px);
+  display: inline-flex; align-items: center; gap: 6px; color: var(--cyan); font-size: clamp(8px, 1.05vh, 11px);
+  font-weight: 900; letter-spacing: .13em; text-transform: uppercase; pointer-events: none;
 }
-.live-dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(123,226,243,.10); animation: pulse 2s infinite; }
+.live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(105,221,234,.13); animation: pulse 2s infinite; }
 .live-dot[hidden] { display: none; }
-@keyframes pulse { 50% { opacity: .45; box-shadow: 0 0 0 8px rgba(123,226,243,0); } }
+@keyframes pulse { 50% { opacity: .5; box-shadow: 0 0 0 9px rgba(105,221,234,0); } }
 
 .metrics {
   min-width: 0; min-height: 0; display: grid; grid-template-rows: repeat(10, minmax(0, 1fr)); gap: var(--gap);
   transition: opacity .16s ease, transform .16s ease, filter .16s ease;
 }
-.metrics.is-busy { filter: saturate(.72); }
+.metrics.is-busy { filter: saturate(.82) brightness(.96); }
 .metric-row {
+  --row-accent: var(--cyan); --row-glow: rgba(105,221,234,.11);
   min-width: 0; min-height: 0; display: grid; grid-template-columns: var(--label-width) minmax(0, 1fr);
   align-items: stretch; gap: var(--gap); border: 1px solid var(--line); border-radius: var(--radius);
-  background: linear-gradient(100deg, rgba(255,255,255,.05), rgba(255,255,255,.025));
-  overflow: hidden; box-shadow: 0 5px 24px rgba(0, 0, 0, .12);
+  background: linear-gradient(100deg, rgba(255,255,255,.065), rgba(255,255,255,.028));
+  overflow: hidden; box-shadow: 0 6px 24px rgba(0, 0, 0, .15), inset 3px 0 0 var(--row-accent);
 }
+.metric-row:nth-child(5n + 1) { --row-accent: #63dac2; --row-glow: rgba(99,218,194,.13); }
+.metric-row:nth-child(5n + 2) { --row-accent: #f4bd4f; --row-glow: rgba(244,189,79,.13); }
+.metric-row:nth-child(5n + 3) { --row-accent: #f184aa; --row-glow: rgba(241,132,170,.13); }
+.metric-row:nth-child(5n + 4) { --row-accent: #ff9e8d; --row-glow: rgba(255,158,141,.13); }
+.metric-row:nth-child(5n + 5) { --row-accent: #75d4e1; --row-glow: rgba(117,212,225,.13); }
 .metric-label {
-  min-width: 0; display: flex; align-items: center; gap: clamp(7px, 1.3vw, 15px); padding: 0 clamp(9px, 1.5vw, 18px);
-  background: linear-gradient(100deg, rgba(255,198,92,.075), rgba(255,255,255,.012));
+  min-width: 0; display: flex; align-items: center; gap: clamp(7px, 1vw, 14px); padding: 0 clamp(9px, 1.3vw, 18px);
+  background: linear-gradient(102deg, var(--row-glow), rgba(255,255,255,.018));
   border-right: 1px solid var(--line); position: relative;
 }
 .metric-label::after {
-  content: ""; position: absolute; right: -1px; top: 18%; bottom: 18%; width: 1px;
-  background: linear-gradient(transparent, rgba(255,198,92,.48), transparent);
+  content: ""; position: absolute; right: -1px; top: 13%; bottom: 13%; width: 1px;
+  background: linear-gradient(transparent, var(--row-accent), transparent); opacity: .82;
 }
 .metric-icon {
-  flex: 0 0 auto; width: clamp(20px, 3.2vh, 33px); aspect-ratio: 1; display: grid; place-items: center;
-  border-radius: 50%; color: var(--accent); background: rgba(255,198,92,.105); border: 1px solid rgba(255,198,92,.2);
-  font-size: clamp(11px, 2.05vh, 20px); line-height: 1; box-shadow: 0 0 20px rgba(255,198,92,.06) inset;
+  flex: 0 0 auto; width: clamp(24px, 3.55vh, 36px); aspect-ratio: 1; display: grid; place-items: center;
+  border-radius: 50%; color: var(--row-accent); background: var(--row-glow); border: 1px solid color-mix(in srgb, var(--row-accent) 36%, transparent);
+  font-size: clamp(13px, 2.2vh, 21px); line-height: 1; box-shadow: 0 0 22px var(--row-glow) inset;
 }
 .metric-label h2 {
-  min-width: 0; margin: 0; color: #edf7fc; font-size: clamp(9px, 1.55vh, 17px); line-height: 1.08;
-  font-weight: 760; letter-spacing: -.018em; overflow-wrap: anywhere;
+  min-width: 0; margin: 0; color: #f5fbff; font-size: clamp(12px, 2.05vh, 20px); line-height: 1.08;
+  font-weight: 820; letter-spacing: -.022em; overflow-wrap: normal; word-break: normal; hyphens: none; text-wrap: balance;
 }
 .timeline-wrap { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .timeline-wrap::before, .timeline-wrap::after {
-  content: ""; position: absolute; z-index: 2; top: 0; bottom: 0; width: clamp(9px, 2.4vw, 36px); pointer-events: none;
+  content: ""; position: absolute; z-index: 3; top: 0; bottom: 0; width: clamp(8px, 2.2vw, 32px); pointer-events: none;
 }
-.timeline-wrap::before { left: 0; background: linear-gradient(90deg, rgba(9,25,38,.72), transparent); }
-.timeline-wrap::after { right: 0; background: linear-gradient(270deg, rgba(9,25,38,.72), transparent); }
+.timeline-wrap::before { left: 0; background: linear-gradient(90deg, rgba(5,22,32,.78), transparent); }
+.timeline-wrap::after { right: 0; background: linear-gradient(270deg, rgba(5,22,32,.78), transparent); }
 .timeline {
   width: 100%; height: 100%; min-width: 0; display: flex; align-items: stretch; gap: var(--gap);
-  overflow-x: auto; overflow-y: hidden; padding: clamp(3px, .48vh, 7px) clamp(14px, 4vw, 60px);
+  overflow-x: auto; overflow-y: hidden; padding: clamp(3px, .45vh, 6px) clamp(13px, 3vw, 46px);
   scroll-padding-inline: 50%; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain;
-  touch-action: pan-x; -webkit-overflow-scrolling: touch;
+  touch-action: pan-x; -webkit-overflow-scrolling: touch; cursor: grab;
 }
+.timeline:active { cursor: grabbing; }
 .moment {
-  flex: 0 0 clamp(180px, 42vw, 510px); min-width: 0; height: 100%; scroll-snap-align: center;
+  --quality-color: rgba(201,226,238,.42); --quality-bg: rgba(255,255,255,.062);
+  flex: 0 0 clamp(230px, 37vw, 520px); min-width: 0; height: 100%; scroll-snap-align: center;
   display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 1fr 1fr; align-items: center;
-  column-gap: clamp(6px, 1vw, 12px); padding: 0 clamp(10px, 1.5vw, 18px); border-radius: calc(var(--radius) - 5px);
-  border: 1px solid rgba(190,221,240,.105); background: var(--surface-soft); color: var(--text);
+  column-gap: clamp(8px, 1vw, 14px); padding: 0 clamp(12px, 1.45vw, 19px); border-radius: calc(var(--radius) - 4px);
+  border: 1px solid rgba(201,226,238,.14); background: var(--quality-bg); color: var(--text);
   transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
   position: relative; contain: layout paint; font-variant-numeric: tabular-nums;
 }
-.moment:hover { border-color: rgba(190,221,240,.24); background: rgba(255,255,255,.072); }
+.moment::before { content: ""; position: absolute; left: 0; top: 17%; bottom: 17%; width: 3px; border-radius: 0 999px 999px 0; background: var(--quality-color); opacity: .92; }
+.moment.neutral { --quality-color: var(--lavender); --quality-bg: rgba(157,153,235,.075); }
+.moment.auspicious { --quality-color: var(--mint); --quality-bg: var(--good-bg); }
+.moment.inauspicious { --quality-color: var(--rose); --quality-bg: var(--bad-bg); }
+.moment:hover { border-color: rgba(201,226,238,.34); filter: brightness(1.05); }
 .moment.is-current {
-  transform: translateZ(0) scale(1.008); border-color: rgba(123,226,243,.48);
-  background: linear-gradient(110deg, rgba(123,226,243,.15), rgba(255,255,255,.075));
-  box-shadow: 0 0 0 1px rgba(123,226,243,.08) inset, 0 7px 24px rgba(0,0,0,.16);
+  transform: translateZ(0) scale(1.008); border: 2px solid rgba(105,221,234,.72);
+  background: linear-gradient(110deg, rgba(105,221,234,.21), var(--quality-bg) 72%);
+  box-shadow: 0 0 0 1px rgba(105,221,234,.10) inset, 0 8px 26px rgba(0,0,0,.19), 0 0 24px rgba(105,221,234,.08);
 }
-.moment.auspicious:not(.is-current) { border-color: rgba(88,221,176,.23); background: var(--good-bg); }
-.moment.inauspicious:not(.is-current) { border-color: rgba(255,139,145,.24); background: var(--bad-bg); }
+.moment.is-current::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
 .moment-title {
-  grid-column: 1; grid-row: 1; align-self: end; min-width: 0; padding-bottom: 1px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(9px, 1.55vh, 17px);
-  line-height: 1.05; font-weight: 790; letter-spacing: -.014em;
+  grid-column: 1; grid-row: 1; align-self: end; min-width: 0; padding-bottom: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(13px, 2.1vh, 20px);
+  line-height: 1.04; font-weight: 850; letter-spacing: -.018em;
 }
 .moment-time {
   grid-column: 1; grid-row: 2; align-self: start; min-width: 0; padding-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted);
-  font-size: clamp(8px, 1.28vh, 14px); line-height: 1.05; font-weight: 560;
+  font-size: clamp(11px, 1.65vh, 16px); line-height: 1.08; font-weight: 650;
 }
 .badges {
   grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
-  gap: clamp(2px, .35vh, 4px); min-width: 0;
+  gap: clamp(2px, .34vh, 4px); min-width: 0;
 }
 .badge {
-  max-width: clamp(74px, 18vw, 118px); padding: clamp(2px, .32vh, 4px) clamp(5px, .65vw, 9px);
+  max-width: clamp(78px, 18vw, 126px); padding: clamp(2px, .35vh, 4px) clamp(6px, .72vw, 10px);
   border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: clamp(6px, .88vh, 9px); line-height: 1.05; font-weight: 900; letter-spacing: .075em;
+  font-size: clamp(7.5px, 1.16vh, 11px); line-height: 1.05; font-weight: 950; letter-spacing: .065em;
   text-transform: uppercase; border: 1px solid transparent;
 }
-.badge.now { color: #071722; background: var(--accent-2); box-shadow: 0 0 18px rgba(123,226,243,.26); }
-.badge.good { color: #d9fff2; background: rgba(40,175,130,.22); border-color: rgba(88,221,176,.34); }
-.badge.bad { color: #ffe8ea; background: rgba(201,70,84,.23); border-color: rgba(255,139,145,.35); }
-.badge.neutral { color: #ecebff; background: rgba(151,145,255,.15); border-color: rgba(185,183,255,.26); }
+.badge.now { color: #062029; background: var(--cyan); border-color: #b9f7fb; box-shadow: 0 0 18px rgba(105,221,234,.28); }
+.badge.good { color: #e6fff7; background: rgba(37,156,118,.37); border-color: rgba(98,221,180,.55); }
+.badge.bad { color: #fff0f2; background: rgba(184,56,76,.38); border-color: rgba(255,137,149,.58); }
+.badge.neutral { color: #f1efff; background: rgba(124,117,221,.27); border-color: rgba(185,180,255,.44); }
 
 .fab {
-  position: fixed; z-index: 20; right: max(14px, calc((100vw - 1680px) / 2 + 18px)); bottom: max(14px, env(safe-area-inset-bottom));
-  width: clamp(47px, 7.6vmin, 68px); aspect-ratio: 1; border: 1px solid rgba(255,225,163,.55); border-radius: 50%;
-  display: grid; place-items: center; color: #2b1a00; cursor: pointer;
-  background: linear-gradient(145deg, #ffe39b, var(--accent) 48%, #e79a2f); box-shadow: 0 13px 34px rgba(0,0,0,.38), 0 0 0 5px rgba(255,198,92,.09);
+  position: fixed; z-index: 20; right: max(12px, calc((100vw - 1920px) / 2 + 16px)); bottom: max(12px, env(safe-area-inset-bottom));
+  width: clamp(50px, 7.2vmin, 66px); aspect-ratio: 1; border: 1px solid rgba(255,229,181,.72); border-radius: 50%;
+  display: grid; place-items: center; color: #301b10; cursor: pointer;
+  background: linear-gradient(145deg, #ffe7ad, var(--gold) 45%, var(--peach));
+  box-shadow: 0 14px 36px rgba(0,0,0,.40), 0 0 0 5px rgba(244,189,79,.10);
   transition: transform .17s ease, box-shadow .17s ease, filter .17s ease;
 }
-.fab svg { width: 43%; height: 43%; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
-.fab:hover { transform: translateY(-2px) rotate(-3deg); box-shadow: 0 17px 38px rgba(0,0,0,.42), 0 0 0 7px rgba(255,198,92,.10); }
+.fab svg { width: 43%; height: 43%; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.fab:hover { transform: translateY(-2px) rotate(-3deg); box-shadow: 0 18px 40px rgba(0,0,0,.43), 0 0 0 7px rgba(244,189,79,.11); }
 .fab:active { transform: translateY(1px) scale(.97); }
 .fab::after {
   content: attr(data-tooltip); position: absolute; right: calc(100% + 10px); top: 50%; transform: translateY(-50%) translateX(4px);
-  opacity: 0; pointer-events: none; white-space: nowrap; padding: 7px 10px; border-radius: 9px;
-  color: var(--text); background: rgba(4,16,27,.96); border: 1px solid var(--line-strong); font-size: 12px;
+  opacity: 0; pointer-events: none; white-space: nowrap; padding: 8px 11px; border-radius: 10px;
+  color: var(--text); background: rgba(4,16,25,.97); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 700;
   transition: opacity .15s ease, transform .15s ease;
 }
 .fab:hover::after, .fab:focus-visible::after { opacity: 1; transform: translateY(-50%) translateX(0); }
 
 .settings-sheet {
-  width: min(94vw, 620px); max-height: min(92dvh, 780px); margin: auto; padding: 0; border: 1px solid rgba(190,221,240,.26);
-  border-radius: clamp(20px, 4vw, 32px); color: var(--text); background: linear-gradient(155deg, rgba(17,39,57,.995), rgba(7,23,36,.995));
-  box-shadow: 0 35px 100px rgba(0,0,0,.62); overflow: hidden;
+  width: min(94vw, 650px); max-height: min(94dvh, 820px); margin: auto; padding: 0; border: 1px solid rgba(201,226,238,.29);
+  border-radius: clamp(20px, 4vw, 32px); color: var(--text); background: linear-gradient(155deg, rgba(20,49,67,.998), rgba(5,22,33,.998));
+  box-shadow: 0 35px 100px rgba(0,0,0,.65); overflow: hidden;
 }
-.settings-sheet::backdrop { background: rgba(1,8,14,.72); backdrop-filter: blur(9px) saturate(.75); }
-.settings-form { max-height: min(92dvh, 780px); display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.settings-sheet::backdrop { background: rgba(1,8,14,.76); backdrop-filter: blur(9px) saturate(.78); }
+.settings-form { max-height: min(94dvh, 820px); display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
 .sheet-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: clamp(15px, 3vw, 24px);
-  border-bottom: 1px solid var(--line); background: rgba(255,255,255,.025);
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: clamp(16px, 3vw, 25px);
+  border-bottom: 1px solid var(--line); background: rgba(255,255,255,.028);
 }
-.sheet-head h2 { margin: 0; font-size: clamp(19px, 3.6vw, 28px); letter-spacing: -.025em; }
+.sheet-head h2 { margin: 0; font-size: clamp(22px, 3.7vw, 30px); letter-spacing: -.025em; }
 .icon-button {
-  width: 38px; aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); background: rgba(255,255,255,.05);
-  color: var(--text); cursor: pointer; display: grid; place-items: center; font-size: 20px;
+  width: 44px; aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); background: rgba(255,255,255,.06);
+  color: var(--text); cursor: pointer; display: grid; place-items: center; font-size: 24px;
 }
-.icon-button:hover { background: rgba(255,255,255,.1); }
-.sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: clamp(14px, 3vw, 24px); display: grid; gap: 14px; }
-.field { display: grid; gap: 7px; min-width: 0; }
-.field > label, .field-label { color: #dceaf2; font-size: 12px; font-weight: 780; letter-spacing: .055em; text-transform: uppercase; }
+.icon-button:hover { background: rgba(255,255,255,.11); }
+.sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: clamp(15px, 3vw, 25px); display: grid; gap: 16px; }
+.field { display: grid; gap: 8px; min-width: 0; }
+.field > label, .field-label { color: #e4f0f5; font-size: 14px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
 .input-shell { position: relative; min-width: 0; }
 .input-shell input, .field input, .field select {
-  width: 100%; min-width: 0; height: 46px; border: 1px solid var(--line-strong); border-radius: 13px;
-  color: var(--text); background: rgba(255,255,255,.055); padding: 0 13px; outline: none;
+  width: 100%; min-width: 0; height: 52px; border: 1px solid var(--line-strong); border-radius: 14px;
+  color: var(--text); background: rgba(255,255,255,.065); padding: 0 14px; outline: none; font-size: 16px;
   transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.field select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 17px) 19px, calc(100% - 12px) 19px; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
-.input-shell input:focus, .field input:focus, .field select:focus { border-color: rgba(123,226,243,.7); box-shadow: 0 0 0 4px rgba(123,226,243,.09); background: rgba(255,255,255,.075); }
-.field input:disabled { opacity: .48; cursor: not-allowed; }
-.place-results {
-  display: grid; gap: 5px; margin-top: 7px; max-height: 205px; overflow-y: auto; border-radius: 13px;
-}
+.field select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 19px) 22px, calc(100% - 13px) 22px; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 40px; }
+.input-shell input:focus, .field input:focus, .field select:focus { border-color: rgba(105,221,234,.76); box-shadow: 0 0 0 4px rgba(105,221,234,.11); background: rgba(255,255,255,.085); }
+.field input:disabled { opacity: .5; cursor: not-allowed; }
+.place-results { display: grid; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; border-radius: 13px; }
 .place-result {
-  width: 100%; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; text-align: left; cursor: pointer;
-  color: var(--text); background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 11px; padding: 9px 11px;
+  width: 100%; min-height: 50px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; text-align: left; cursor: pointer;
+  color: var(--text); background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
 }
-.place-result:hover, .place-result:focus-visible { border-color: rgba(123,226,243,.44); background: rgba(123,226,243,.08); }
-.place-main { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
-.place-sub { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
-.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; padding: 0 2px; }
-.switch-row label { font-weight: 700; color: #e6f2f7; }
-.switch { position: relative; width: 48px; height: 27px; flex: 0 0 auto; }
+.place-result:hover, .place-result:focus-visible { border-color: rgba(105,221,234,.50); background: rgba(105,221,234,.10); }
+.place-main { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; font-weight: 780; }
+.place-sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 13px; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; padding: 0 2px; }
+.switch-row label { font-size: 16px; font-weight: 760; color: #ecf6fa; }
+.switch { position: relative; width: 54px; height: 30px; flex: 0 0 auto; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
-.switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(255,255,255,.13); border: 1px solid var(--line-strong); transition: .18s ease; cursor: pointer; }
-.switch-track::after { content: ""; position: absolute; width: 19px; height: 19px; left: 3px; top: 3px; border-radius: 50%; background: #d6e5ed; box-shadow: 0 2px 8px rgba(0,0,0,.28); transition: .18s ease; }
-.switch input:checked + .switch-track { background: rgba(77,203,163,.25); border-color: rgba(88,221,176,.5); }
-.switch input:checked + .switch-track::after { transform: translateX(21px); background: var(--good); }
-.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 4px rgba(123,226,243,.12); }
+.switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid var(--line-strong); transition: .18s ease; cursor: pointer; }
+.switch-track::after { content: ""; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px; border-radius: 50%; background: #dce9ef; box-shadow: 0 2px 8px rgba(0,0,0,.28); transition: .18s ease; }
+.switch input:checked + .switch-track { background: rgba(73,201,158,.28); border-color: rgba(98,221,180,.58); }
+.switch input:checked + .switch-track::after { transform: translateX(24px); background: var(--mint); }
+.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 4px rgba(105,221,234,.14); }
 .location-button {
-  height: 44px; border: 1px solid rgba(123,226,243,.28); border-radius: 13px; color: #dbfaff;
-  background: rgba(123,226,243,.08); cursor: pointer; font-weight: 740;
+  min-height: 50px; border: 1px solid rgba(105,221,234,.34); border-radius: 14px; color: #e4fbff;
+  background: rgba(105,221,234,.10); cursor: pointer; font-size: 16px; font-weight: 790;
 }
-.location-button:hover { background: rgba(123,226,243,.14); border-color: rgba(123,226,243,.5); }
-.sheet-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.location-button:hover { background: rgba(105,221,234,.17); border-color: rgba(105,221,234,.57); }
+.sheet-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.48; }
 .sheet-actions {
-  display: grid; grid-template-columns: 1fr 1.55fr; gap: 10px; padding: clamp(13px, 3vw, 22px);
-  border-top: 1px solid var(--line); background: rgba(0,0,0,.12);
+  display: grid; grid-template-columns: 1fr 1.55fr; gap: 11px; padding: clamp(14px, 3vw, 23px);
+  border-top: 1px solid var(--line); background: rgba(0,0,0,.13);
 }
-.action-button { height: 47px; border-radius: 14px; border: 1px solid var(--line-strong); cursor: pointer; font-weight: 820; }
-.action-button.secondary { color: var(--text); background: rgba(255,255,255,.055); }
-.action-button.primary { color: #2a1900; background: linear-gradient(135deg, #ffe49f, var(--accent)); border-color: rgba(255,221,145,.72); box-shadow: 0 8px 24px rgba(255,174,55,.14); }
+.action-button { min-height: 52px; border-radius: 15px; border: 1px solid var(--line-strong); cursor: pointer; font-size: 16px; font-weight: 860; }
+.action-button.secondary { color: var(--text); background: rgba(255,255,255,.06); }
+.action-button.primary { color: #2c1908; background: linear-gradient(135deg, #ffe7a8, var(--gold)); border-color: rgba(255,227,165,.78); box-shadow: 0 8px 24px rgba(244,189,79,.16); }
 .action-button:hover { filter: brightness(1.06); }
 
 .toast {
   position: fixed; z-index: 50; left: 50%; bottom: max(17px, env(safe-area-inset-bottom)); transform: translate(-50%, 18px);
-  max-width: min(88vw, 520px); padding: 10px 14px; border-radius: 12px; color: var(--text);
-  background: rgba(4,17,28,.96); border: 1px solid var(--line-strong); box-shadow: 0 13px 38px rgba(0,0,0,.38);
-  font-size: 13px; font-weight: 680; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+  max-width: min(90vw, 560px); padding: 11px 15px; border-radius: 13px; color: var(--text);
+  background: rgba(4,17,28,.97); border: 1px solid var(--line-strong); box-shadow: 0 13px 38px rgba(0,0,0,.40);
+  font-size: 14px; font-weight: 720; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .loading-mask {
   position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0;
-  background: rgba(3,12,20,.18); transition: opacity .12s ease;
+  background: rgba(3,12,20,.20); transition: opacity .12s ease;
 }
 .loading-mask.show { opacity: 1; }
-.spinner { width: 36px; aspect-ratio: 1; border-radius: 50%; border: 3px solid rgba(255,255,255,.16); border-top-color: var(--accent); animation: spin .7s linear infinite; box-shadow: 0 0 30px rgba(255,198,92,.12); }
+.spinner { width: 40px; aspect-ratio: 1; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--gold); animation: spin .7s linear infinite; box-shadow: 0 0 30px rgba(244,189,79,.14); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; }
+:focus-visible { outline: 3px solid var(--cyan); outline-offset: 3px; }
 
 @media (min-width: 900px) {
-  :root { --label-width: clamp(220px, 22vw, 315px); }
-  .moment { flex-basis: clamp(290px, 31vw, 530px); }
+  :root { --label-width: clamp(220px, 20vw, 310px); }
+  .moment { flex-basis: clamp(330px, 30vw, 560px); }
 }
 
 @media (max-width: 560px) {
-  :root { --label-width: clamp(92px, 31vw, 132px); }
+  :root {
+    --label-width: clamp(106px, 30vw, 128px);
+    --header-left-space: 42px;
+    --header-right-space: 88px;
+    --header-height: clamp(52px, 7.8vh, 68px);
+  }
+  .header-full { display: none; }
+  .header-compact { display: inline; }
+  .day-panel { padding-left: calc(var(--header-left-space) + 3px); padding-right: calc(var(--header-right-space) + 3px); }
+  .day-title { font-size: clamp(15px, 4.55vw, 21px); letter-spacing: -.035em; }
+  .previous-control { left: 5px; width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
+  .header-actions { right: 5px; gap: 4px; }
+  .header-actions .header-control { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
+  .live-dot { display: none; }
   .metric-label { gap: 6px; padding-inline: 7px; }
-  .metric-icon { width: clamp(19px, 3.25vh, 27px); }
-  .metric-label h2 { font-size: clamp(8px, 1.35vh, 11.5px); line-height: 1.02; }
-  .moment { flex-basis: clamp(178px, 66vw, 310px); padding-inline: 9px; }
+  .metric-icon { width: clamp(22px, 3.25vh, 29px); font-size: clamp(12px, 1.9vh, 16px); }
+  .metric-label h2 { font-size: clamp(12.5px, 1.86vh, 16px); line-height: 1.04; }
+  .timeline { padding-inline: 9px 25px; }
+  .moment { flex-basis: calc(100vw - var(--label-width) - 18px); min-width: 196px; max-width: 350px; padding-inline: 9px; column-gap: 5px; }
+  .moment-title { font-size: clamp(14px, 1.98vh, 17.5px); }
+  .moment-time { font-size: clamp(12px, 1.70vh, 14.5px); }
+  .badge { max-width: 83px; }
   .badges { gap: 1px; }
+  .fab { width: 52px; right: 9px; bottom: max(9px, env(safe-area-inset-bottom)); }
   .fab::after { display: none; }
   .form-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 360px) {
-  .fab { width: 36px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); }
+  :root { --label-width: 106px; --header-right-space: 84px; }
+  .metric-label { padding-inline: 5px; gap: 5px; }
+  .metric-icon { width: 20px; }
+  .metric-label h2 { font-size: 12.5px; line-height: 1.01; }
+  .moment { min-width: 184px; padding-inline: 8px; }
+  .badge { padding-inline: 5px; max-width: 76px; }
+  .fab { width: 47px; }
 }
 
-@media (max-height: 620px) {
-  :root { --gap: 3px; --pad: 5px; --radius: 11px; }
-  .app-shell { grid-template-rows: 39px minmax(0, 1fr); }
-  .day-title { font-size: clamp(12px, 2.2vw, 23px); }
+@media (max-height: 640px) {
+  :root { --gap: 2px; --pad: 4px; --radius: 10px; --header-height: 46px; }
+  .day-title { font-size: clamp(13px, 2.55vw, 25px); }
+  .previous-control, .header-actions .header-control { width: 38px; height: 38px; min-width: 38px; min-height: 38px; }
   .live-dot { display: none; }
   .metric-label { padding-inline: 6px; gap: 5px; }
-  .metric-icon { width: 18px; font-size: 10px; }
-  .metric-label h2 { font-size: clamp(7px, 1.55vh, 11px); }
+  .metric-icon { width: 19px; font-size: 10px; }
+  .metric-label h2 { font-size: clamp(12px, 2.25vh, 13px); line-height: 1.01; }
   .timeline { padding-block: 2px; }
-  .moment { grid-template-rows: 1fr; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; padding-inline: 8px; }
-  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: 0; font-size: clamp(7px, 1.5vh, 11px); }
-  .moment-time { grid-column: 2; grid-row: 1; align-self: center; padding: 0; text-align: right; font-size: clamp(6px, 1.25vh, 9px); }
-  .badges { grid-column: 3; grid-row: 1; margin-left: 4px; }
-  .badge:not(.now) { display: none; }
-  .badge { font-size: 6px; padding: 2px 4px; }
-  .fab { width: 42px; }
+  .moment { padding-inline: 8px; column-gap: 6px; }
+  .moment-title { font-size: clamp(13.5px, 2.55vh, 14.5px); }
+  .moment-time { font-size: clamp(11.5px, 2.15vh, 12.5px); }
+  .badge { font-size: clamp(7px, 1.45vh, 8px); padding: 2px 4px; max-width: 72px; }
+  .fab { width: 44px; }
 }
 
 @media (orientation: landscape) and (max-height: 480px) {
-  :root { --label-width: clamp(120px, 20vw, 210px); }
-  .moment { flex-basis: clamp(260px, 39vw, 440px); }
+  :root { --label-width: clamp(122px, 19vw, 198px); --header-height: 40px; }
+  .day-title { font-size: clamp(12px, 2.1vw, 20px); }
+  .previous-control, .header-actions .header-control { width: 30px; height: 30px; min-width: 30px; min-height: 30px; font-size: 23px; }
+  .moment { flex-basis: clamp(270px, 39vw, 420px); grid-template-rows: 1fr; grid-template-columns: minmax(0,1.2fr) minmax(0,.95fr) auto; padding-inline: 8px; column-gap: 6px; }
+  .metric-label h2 { font-size: 10.5px; }
+  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: 0; font-size: 11px; }
+  .moment-time { grid-column: 2; grid-row: 1; align-self: center; padding: 0; text-align: right; font-size: 9.5px; }
+  .badges { grid-column: 3; grid-row: 1; margin-left: 2px; gap: 1px; }
+  .badge { font-size: 6.5px; padding: 1px 4px; }
+  .fab { width: 36px; right: 6px; bottom: 6px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1744,7 +1893,7 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 @media (forced-colors: active) {
-  .moment, .metric-row, .day-carousel, .fab { border: 1px solid CanvasText; }
+  .moment, .metric-row, .day-carousel, .fab, .header-control { border: 1px solid CanvasText; }
   .badge { border: 1px solid CanvasText; }
 }
 """
@@ -1765,7 +1914,8 @@ JS = r"""
     time: state.query.time,
     language: state.query.language,
     live: Boolean(state.query.live),
-    country: state.query.country || ''
+    country: state.query.country || '',
+    locationMode: 'server'
   };
   let loading = false;
   let selectedPlace = true;
@@ -1793,6 +1943,9 @@ JS = r"""
   const closeButton = $('#closeDialog');
   const cancelButton = $('#cancelButton');
   const locationButton = $('#locationButton');
+  const previousDayButton = $('#previousDayButton');
+  const nextDayButton = $('#nextDayButton');
+  const refreshButton = $('#refreshButton');
   const toastNode = $('#toast');
   const loadingMask = $('#loadingMask');
   const liveIndicator = $('#liveIndicator');
@@ -1844,7 +1997,37 @@ JS = r"""
       </article>`;
   }
 
-  function renderSections() {
+  function captureTimelineState() {
+    const snapshot = {};
+    $$('.metric-row', metrics).forEach(row => {
+      const rail = $('.timeline', row);
+      if (!rail) return;
+      const current = $('.moment.is-current', rail);
+      const viewportCenter = rail.scrollLeft + rail.clientWidth / 2;
+      const currentCenter = current ? current.offsetLeft + current.offsetWidth / 2 : Number.NaN;
+      snapshot[row.dataset.section] = {
+        scrollLeft: rail.scrollLeft,
+        nearCurrent: Number.isFinite(currentCenter) && Math.abs(viewportCenter - currentCenter) <= Math.max(42, current.offsetWidth * .36)
+      };
+    });
+    return snapshot;
+  }
+
+  function restoreTimelineState(snapshot) {
+    $$('.metric-row', metrics).forEach(row => {
+      const rail = $('.timeline', row);
+      const saved = snapshot?.[row.dataset.section];
+      if (!rail || !saved) return;
+      const current = $('.moment.is-current', rail);
+      if (saved.nearCurrent && current) {
+        rail.scrollLeft = current.offsetLeft - (rail.clientWidth - current.offsetWidth) / 2;
+      } else {
+        rail.scrollLeft = Math.min(saved.scrollLeft, Math.max(0, rail.scrollWidth - rail.clientWidth));
+      }
+    });
+  }
+
+  function renderSections(timelineState = null) {
     metrics.innerHTML = state.sections.map(section => `
       <section class="metric-row" data-section="${escapeHtml(section.key)}" itemscope itemtype="https://schema.org/Observation">
         <div class="metric-label">
@@ -1858,7 +2041,7 @@ JS = r"""
         </div>
       </section>`).join('');
     bindTimelineInteractions();
-    requestAnimationFrame(centerCurrentItems);
+    requestAnimationFrame(() => timelineState ? restoreTimelineState(timelineState) : centerCurrentItems());
   }
 
   function bindTimelineInteractions() {
@@ -1890,15 +2073,16 @@ JS = r"""
   }
 
   function renderDayRail() {
+    const compact = state.headers_compact || state.headers;
     dayRail.innerHTML = [
-      ['previous', state.headers.previous],
-      ['current', state.headers.current],
-      ['next', state.headers.next]
-    ].map(([position, text]) => `
+      ['previous', state.headers.previous, compact.previous],
+      ['current', state.headers.current, compact.current],
+      ['next', state.headers.next, compact.next]
+    ].map(([position, text, compactText]) => `
       <div class="day-panel" data-position="${position}" aria-label="${escapeHtml(position === 'previous' ? state.ui.previous_day : position === 'next' ? state.ui.next_day : state.ui.selected_day)}">
         ${position === 'current'
-          ? `<h1 class="day-title" id="currentHeaderText">${escapeHtml(text)}</h1>`
-          : `<span class="day-title">${escapeHtml(text)}</span>`}
+          ? `<h1 class="day-title" id="currentHeaderText"><span class="header-full">${escapeHtml(text)}</span><span class="header-compact">${escapeHtml(compactText)}</span></h1>`
+          : `<span class="day-title"><span class="header-full">${escapeHtml(text)}</span><span class="header-compact">${escapeHtml(compactText)}</span></span>`}
       </div>`).join('');
     suppressDayScroll = true;
     requestAnimationFrame(() => {
@@ -1913,7 +2097,7 @@ JS = r"""
     $$('.day-title', dayRail).forEach(node => {
       node.style.fontSize = '';
       const maximum = parseFloat(getComputedStyle(node).fontSize) || 24;
-      let low = 8;
+      let low = window.innerWidth <= 560 ? 12 : 14;
       let high = maximum;
       for (let i = 0; i < 8; i += 1) {
         const mid = (low + high) / 2;
@@ -1921,7 +2105,7 @@ JS = r"""
         if (node.scrollWidth <= node.clientWidth) low = mid;
         else high = mid;
       }
-      node.style.fontSize = `${Math.max(8, low - .15)}px`;
+      node.style.fontSize = `${Math.max(window.innerWidth <= 560 ? 12 : 14, low - .15)}px`;
     });
   }
 
@@ -1938,6 +2122,10 @@ JS = r"""
     editButton.dataset.tooltip = state.ui.edit;
     editButton.setAttribute('aria-label', state.ui.edit);
     closeButton.setAttribute('aria-label', state.ui.close);
+    previousDayButton.setAttribute('aria-label', state.ui.previous_day);
+    nextDayButton.setAttribute('aria-label', state.ui.next_day);
+    refreshButton.setAttribute('aria-label', state.ui.refresh);
+    refreshButton.setAttribute('title', `${state.ui.refresh} · ${state.ui.auto_refresh}`);
     liveIndicator.textContent = state.ui.live;
   }
 
@@ -1951,13 +2139,23 @@ JS = r"""
     const ogTitle = $('meta[property="og:title"]');
     const ogDescription = $('meta[property="og:description"]');
     const ogUrl = $('meta[property="og:url"]');
+    const ogImage = $('meta[property="og:image"]');
+    const ogSecureImage = $('meta[property="og:image:secure_url"]');
+    const ogImageAlt = $('meta[property="og:image:alt"]');
     const twitterTitle = $('meta[name="twitter:title"]');
     const twitterDescription = $('meta[name="twitter:description"]');
+    const twitterImage = $('meta[name="twitter:image"]');
+    const twitterImageAlt = $('meta[name="twitter:image:alt"]');
     if (ogTitle) ogTitle.content = state.seo.title;
     if (ogDescription) ogDescription.content = state.seo.description;
     if (ogUrl) ogUrl.content = state.seo.canonical;
+    if (ogImage) ogImage.content = state.seo.og_image;
+    if (ogSecureImage) ogSecureImage.content = state.seo.og_image;
+    if (ogImageAlt) ogImageAlt.content = state.seo.title;
     if (twitterTitle) twitterTitle.content = state.seo.title;
     if (twitterDescription) twitterDescription.content = state.seo.description;
+    if (twitterImage) twitterImage.content = state.seo.og_image;
+    if (twitterImageAlt) twitterImageAlt.content = state.seo.title;
     Object.entries(state.seo.alternates || {}).forEach(([code, href]) => {
       let link = $(`link[rel="alternate"][hreflang="${cssEscape(code)}"]`);
       if (!link) {
@@ -1971,10 +2169,10 @@ JS = r"""
     if (state.jsonld && ldJsonNode) ldJsonNode.textContent = JSON.stringify(state.jsonld);
   }
 
-  function renderAll() {
+  function renderAll({timelineState = null} = {}) {
     applyI18n();
     renderDayRail();
-    renderSections();
+    renderSections(timelineState);
     renderSeo();
     syncForm();
   }
@@ -2004,19 +2202,20 @@ JS = r"""
     return animation ? animation.finished.catch(() => undefined) : Promise.resolve();
   }
 
-  async function fetchPanchang(direction = 0, historyMode = 'push') {
+  async function fetchPanchang(direction = 0, historyMode = 'push', {timelineState = null, showMask = true} = {}) {
     if (loading) return false;
     loading = true;
+    const locationMode = settings.locationMode || 'server';
     metrics.classList.add('is-busy');
     metrics.setAttribute('aria-busy', 'true');
-    const maskTimer = window.setTimeout(() => loadingMask.classList.add('show'), 180);
+    const maskTimer = showMask ? window.setTimeout(() => loadingMask.classList.add('show'), 180) : 0;
     const outAnimation = direction ? metrics.animate([
       {transform: 'translateX(0)', opacity: 1},
       {transform: `translateX(${direction > 0 ? '-7%' : '7%'})`, opacity: .18}
     ], {duration: 145, easing: 'ease-in', fill: 'forwards'}) : null;
 
     try {
-      const responsePromise = fetch(apiRequestUrl(), {headers: {'Accept': 'application/json'}});
+      const responsePromise = fetch(apiRequestUrl(), {headers: {'Accept': 'application/json'}, cache: 'no-store'});
       const [response] = await Promise.all([responsePromise, animationDone(outAnimation)]);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const nextState = await response.json();
@@ -2032,9 +2231,10 @@ JS = r"""
         time: state.query.time,
         language: state.query.language,
         live: Boolean(state.query.live),
-        country: state.query.country || ''
+        country: state.query.country || '',
+        locationMode
       };
-      renderAll();
+      renderAll({timelineState});
       if (direction) {
         metrics.animate([
           {transform: `translateX(${direction > 0 ? '7%' : '-7%'})`, opacity: .16},
@@ -2051,7 +2251,7 @@ JS = r"""
       renderDayRail();
       return false;
     } finally {
-      window.clearTimeout(maskTimer);
+      if (maskTimer) window.clearTimeout(maskTimer);
       loadingMask.classList.remove('show');
       metrics.classList.remove('is-busy');
       metrics.setAttribute('aria-busy', 'false');
@@ -2083,6 +2283,24 @@ JS = r"""
     await fetchPanchang(direction, 'push');
   }
 
+  async function refreshNow({manual = false, preserveScroll = true} = {}) {
+    if (loading) return false;
+    const timelineState = preserveScroll ? captureTimelineState() : null;
+    if (settings.live) applyCurrentZonedTime();
+    refreshButton.classList.add('is-refreshing');
+    refreshButton.disabled = true;
+    refreshButton.setAttribute('aria-busy', 'true');
+    try {
+      const ok = await fetchPanchang(0, 'replace', {timelineState, showMask: manual});
+      if (ok && manual) showToast(state.ui.refreshed);
+      return ok;
+    } finally {
+      refreshButton.classList.remove('is-refreshing');
+      refreshButton.disabled = false;
+      refreshButton.removeAttribute('aria-busy');
+    }
+  }
+
   dayRail.addEventListener('scroll', () => {
     if (suppressDayScroll || loading) return;
     window.clearTimeout(dayScrollTimer);
@@ -2101,6 +2319,10 @@ JS = r"""
     event.preventDefault();
     dayRail.scrollLeft += Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
   }, {passive: false});
+
+  previousDayButton.addEventListener('click', () => shiftDay(-1));
+  nextDayButton.addEventListener('click', () => shiftDay(1));
+  refreshButton.addEventListener('click', () => refreshNow({manual: true, preserveScroll: false}));
 
   function openDialog() {
     syncForm();
@@ -2179,6 +2401,7 @@ JS = r"""
     settings.timezone = place.timezone || settings.timezone;
     settings.country = place.country || '';
     settings.slug = place.slug || '';
+    settings.locationMode = 'manual';
     placeInput.value = place.display_name || place.name;
     selectedPlace = true;
     placeResults.innerHTML = '';
@@ -2231,6 +2454,7 @@ JS = r"""
       settings.place = state.ui.current_location;
       settings.country = '';
       settings.live = true;
+      settings.locationMode = 'auto';
       selectedPlace = true;
       applyCurrentZonedTime();
       placeInput.value = settings.place;
@@ -2261,6 +2485,7 @@ JS = r"""
     }
     settings.language = languageInput.value;
     settings.live = liveInput.checked;
+    if (selectedPlace && settings.place !== state.ui.current_location && settings.locationMode !== 'auto') settings.locationMode = 'manual';
     if (settings.live) {
       applyCurrentZonedTime();
     } else {
@@ -2273,16 +2498,17 @@ JS = r"""
 
   function savePreferences() {
     try {
-      localStorage.setItem('panchang-preferences-v1', JSON.stringify({
+      localStorage.setItem('panchang-preferences-v2', JSON.stringify({
         place: settings.place, lat: settings.lat, lon: settings.lon, timezone: settings.timezone,
-        country: settings.country, language: settings.language
+        country: settings.country, language: settings.language, slug: settings.slug || '',
+        locationMode: settings.locationMode || 'manual'
       }));
     } catch (_) { /* Storage is optional. */ }
   }
 
   function loadPreferences() {
     try {
-      const raw = localStorage.getItem('panchang-preferences-v1');
+      const raw = localStorage.getItem('panchang-preferences-v2');
       return raw ? JSON.parse(raw) : null;
     } catch (_) {
       return null;
@@ -2294,24 +2520,32 @@ JS = r"""
     return params.has('lat') || params.has('place') || /^\/[a-z]{2}\/panchang\//.test(location.pathname);
   }
 
-  function localizedHeader(offset = 0) {
+  function localizedHeaders(offset = 0) {
     const parts = getZonedParts(settings.timezone);
     const dateValue = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offset, 12));
     const locale = localeMap[settings.language] || 'en-IN';
     let dateText;
+    let compactDate;
     if (settings.language === 'en') {
       const day = dateValue.getUTCDate();
       const remainder = day % 100;
       const suffix = remainder >= 11 && remainder <= 13 ? 'th' : ({1: 'st', 2: 'nd', 3: 'rd'}[day % 10] || 'th');
       const month = new Intl.DateTimeFormat(locale, {month: 'short', timeZone: 'UTC'}).format(dateValue);
       dateText = `${day}${suffix} ${month} ${dateValue.getUTCFullYear()}`;
+      compactDate = `${day}/${dateValue.getUTCMonth() + 1}`;
     } else {
       dateText = new Intl.DateTimeFormat(locale, {day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'}).format(dateValue);
+      compactDate = `${dateValue.getUTCDate()}/${dateValue.getUTCMonth() + 1}`;
     }
     const timeText = new Intl.DateTimeFormat(locale, {
       hour: 'numeric', minute: '2-digit', hour12: true, timeZone: settings.timezone
     }).format(new Date());
-    return `${state.ui.panchang} (${settings.place} - ${dateText} - ${timeText})`;
+    const compactHour = parts.hour % 12 || 12;
+    const compactTime = `${compactHour}:${String(parts.minute).padStart(2, '0')}${parts.hour < 12 ? 'a' : 'p'}`;
+    return {
+      full: `${state.ui.panchang} (${settings.place} - ${dateText} - ${timeText})`,
+      compact: `${state.ui.panchang} · ${settings.place} · ${compactDate} · ${compactTime}`
+    };
   }
 
   function liveTick() {
@@ -2321,21 +2555,33 @@ JS = r"""
     if (minuteKey === lastLiveMinute) return;
     lastLiveMinute = minuteKey;
     applyCurrentZonedTime();
-    state.headers.previous = localizedHeader(-1);
-    state.headers.current = localizedHeader(0);
-    state.headers.next = localizedHeader(1);
+    const previous = localizedHeaders(-1);
+    const current = localizedHeaders(0);
+    const next = localizedHeaders(1);
+    state.headers = {previous: previous.full, current: current.full, next: next.full};
+    state.headers_compact = {previous: previous.compact, current: current.compact, next: next.compact};
     const panels = $$('.day-panel .day-title', dayRail);
-    if (panels.length === 3) {
-      panels[0].textContent = state.headers.previous;
-      panels[1].textContent = state.headers.current;
-      panels[2].textContent = state.headers.next;
-      fitHeaderText();
-    }
-    const currentEnds = state.sections
-      .flatMap(section => section.items.filter(item => item.current && item.end).map(item => Date.parse(item.end)))
-      .filter(Number.isFinite);
-    const boundaryPassed = currentEnds.some(end => Date.now() >= end + 15000);
-    if (boundaryPassed || Date.now() - lastDataFetch > 5 * 60 * 1000) fetchPanchang(0, 'replace');
+    const values = [previous, current, next];
+    panels.forEach((panel, index) => {
+      const fullNode = $('.header-full', panel);
+      const compactNode = $('.header-compact', panel);
+      if (fullNode) fullNode.textContent = values[index].full;
+      if (compactNode) compactNode.textContent = values[index].compact;
+    });
+    fitHeaderText();
+  }
+
+  async function minuteRefresh() {
+    if (document.visibilityState !== 'visible' || loading) return;
+    await refreshNow({manual: false, preserveScroll: true});
+  }
+
+  function scheduleMinuteRefresh() {
+    const firstDelay = 60000 - (Date.now() % 60000) + 900;
+    window.setTimeout(() => {
+      minuteRefresh();
+      window.setInterval(minuteRefresh, 60000);
+    }, firstDelay);
   }
 
   window.addEventListener('resize', () => {
@@ -2351,33 +2597,73 @@ JS = r"""
     if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); shiftDay(-1); }
     if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); shiftDay(1); }
     if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'e' && !dialog.open) openDialog();
+    if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'r' && !dialog.open) { event.preventDefault(); refreshNow({manual: true, preserveScroll: false}); }
     if (event.key === 'Escape' && dialog.open) closeDialog();
   });
+
+  function applyUjjainFallback(language = settings.language) {
+    const fallback = state.default_location || {
+      name: 'Ujjain', lat: 23.1765, lon: 75.7885, timezone: 'Asia/Kolkata', country: 'India', slug: 'ujjain'
+    };
+    settings = {
+      ...settings, place: fallback.name, slug: fallback.slug || 'ujjain', lat: Number(fallback.lat), lon: Number(fallback.lon),
+      timezone: fallback.timezone, country: fallback.country || 'India', language, live: true, locationMode: 'default'
+    };
+    applyCurrentZonedTime();
+  }
+
+  async function mayRequestGeolocation() {
+    if (!navigator.geolocation) return false;
+    try {
+      if (navigator.permissions?.query) {
+        const permission = await navigator.permissions.query({name: 'geolocation'});
+        if (permission.state === 'denied') return false;
+        if (permission.state === 'granted') return true;
+      }
+    } catch (_) { /* Some browsers do not expose geolocation permission state. */ }
+    try {
+      if (sessionStorage.getItem('panchang-location-requested')) return false;
+      sessionStorage.setItem('panchang-location-requested', '1');
+    } catch (_) { /* Session storage is optional. */ }
+    return true;
+  }
 
   async function personalizeInitialView() {
     if (hasExplicitLocation()) return;
     const saved = loadPreferences();
-    if (saved && Number.isFinite(Number(saved.lat)) && Number.isFinite(Number(saved.lon))) {
-      settings = {...settings, ...saved, live: true};
+    const savedLanguage = saved?.language || settings.language;
+
+    if (saved?.locationMode === 'manual' && Number.isFinite(Number(saved.lat)) && Number.isFinite(Number(saved.lon))) {
+      settings = {...settings, ...saved, language: savedLanguage, live: true, locationMode: 'manual'};
       applyCurrentZonedTime();
-      await fetchPanchang(0, 'replace');
+      await fetchPanchang(0, 'replace', {showMask: false});
       return;
     }
-    try {
-      if (!sessionStorage.getItem('panchang-location-requested')) {
-        sessionStorage.setItem('panchang-location-requested', '1');
-        await useDeviceLocation({auto: true, fetchImmediately: true});
-      }
-    } catch (_) { /* Session storage and geolocation are optional. */ }
+
+    if (await mayRequestGeolocation()) {
+      const located = await useDeviceLocation({auto: true, fetchImmediately: true});
+      if (located) return;
+    }
+
+    const alreadyUjjain = settings.place === (state.default_location?.name || 'Ujjain')
+      && Math.abs(Number(settings.lat) - Number(state.default_location?.lat || 23.1765)) < .001
+      && settings.language === savedLanguage;
+    applyUjjainFallback(savedLanguage);
+    if (!alreadyUjjain) await fetchPanchang(0, 'replace', {showMask: false});
   }
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => undefined));
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - lastDataFetch >= 60000) minuteRefresh();
+  });
+
   renderAll();
-  window.setInterval(liveTick, 30000);
+  window.setInterval(liveTick, 15000);
   liveTick();
+  scheduleMinuteRefresh();
   personalizeInitialView();
 })();
 """
@@ -4111,7 +4397,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#071521">
+  <meta name="theme-color" content="#061923">
   <meta name="color-scheme" content="dark">
   <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
   <meta name="googlebot" content="index,follow,max-image-preview:large,max-snippet:-1">
@@ -4142,14 +4428,17 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta property="og:title" content="{{ seo.title }}">
   <meta property="og:description" content="{{ seo.description }}">
   <meta property="og:url" content="{{ seo.canonical }}">
-  <meta property="og:image" content="{{ root }}/og.png">
+  <meta property="og:image" content="{{ seo.og_image }}">
+  <meta property="og:image:secure_url" content="{{ seo.og_image }}">
+  <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="{{ app_name }} — live local Panchang">
+  <meta property="og:image:alt" content="{{ seo.title }} — current Panchang timings">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ seo.title }}">
   <meta name="twitter:description" content="{{ seo.description }}">
-  <meta name="twitter:image" content="{{ root }}/og.png">
+  <meta name="twitter:image" content="{{ seo.og_image }}">
+  <meta name="twitter:image:alt" content="{{ seo.title }} — current Panchang timings">
 
   <style nonce="{{ nonce }}">
   {{ css | safe }}
@@ -4163,20 +4452,25 @@ HTML_TEMPLATE = r"""<!doctype html>
 
   <main class="app-shell" id="panchangApp">
     <header class="day-carousel" aria-label="{{ data.ui.swipe_hint }}" title="{{ data.ui.swipe_hint }}">
-      <span class="day-edge left" aria-hidden="true">‹</span>
-      <span class="day-edge right" aria-hidden="true">›</span>
-      <span class="live-dot" id="liveIndicator"{% if not context.live %} hidden{% endif %}>{{ data.ui.live }}</span>
+      <button class="header-control previous-control" id="previousDayButton" type="button" aria-label="{{ data.ui.previous_day }}" title="{{ data.ui.previous_day }}">‹</button>
       <div class="day-rail" id="dayRail" tabindex="0">
         <div class="day-panel" data-position="previous" aria-label="{{ data.ui.previous_day }}">
-          <span class="day-title">{{ data.headers.previous }}</span>
+          <span class="day-title"><span class="header-full">{{ data.headers.previous }}</span><span class="header-compact">{{ data.headers_compact.previous }}</span></span>
         </div>
         <div class="day-panel" data-position="current" aria-label="{{ data.ui.selected_day }}">
-          <h1 class="day-title" id="currentHeaderText">{{ data.headers.current }}</h1>
+          <h1 class="day-title" id="currentHeaderText"><span class="header-full">{{ data.headers.current }}</span><span class="header-compact">{{ data.headers_compact.current }}</span></h1>
         </div>
         <div class="day-panel" data-position="next" aria-label="{{ data.ui.next_day }}">
-          <span class="day-title">{{ data.headers.next }}</span>
+          <span class="day-title"><span class="header-full">{{ data.headers.next }}</span><span class="header-compact">{{ data.headers_compact.next }}</span></span>
         </div>
       </div>
+      <div class="header-actions">
+        <button class="header-control next-control" id="nextDayButton" type="button" aria-label="{{ data.ui.next_day }}" title="{{ data.ui.next_day }}">›</button>
+        <button class="header-control refresh-button" id="refreshButton" type="button" aria-label="{{ data.ui.refresh }}" title="{{ data.ui.auto_refresh }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
+        </button>
+      </div>
+      <span class="live-dot" id="liveIndicator"{% if not context.live %} hidden{% endif %}>{{ data.ui.live }}</span>
     </header>
 
     <div class="metrics" id="metrics" aria-live="polite" aria-busy="false">
@@ -4610,8 +4904,8 @@ def web_manifest() -> Response:
         "display": "standalone",
         "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
         "orientation": "any",
-        "background_color": "#06111d",
-        "theme_color": "#071521",
+        "background_color": "#04131c",
+        "theme_color": "#061923",
         "lang": "en-IN",
         "dir": "ltr",
         "categories": ["lifestyle", "utilities", "education"],
@@ -4646,7 +4940,7 @@ self.addEventListener('fetch', event => {{
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname === '/og.png') return;
   if (request.mode === 'navigate') {{
     event.respondWith(fetch(request).then(response => {{
       const copy = response.clone();
@@ -4671,6 +4965,273 @@ self.addEventListener('fetch', event => {{
     return response
 
 
+# ---------------------------------------------------------------------------
+# Dynamic social preview image
+# ---------------------------------------------------------------------------
+
+_SOCIAL_SCRIPT_NAMES = {
+    "hi": "Devanagari", "mr": "Devanagari", "ne": "Devanagari", "sa": "Devanagari",
+    "gu": "Gujarati", "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "kn": "Kannada",
+    "ml": "Malayalam", "pa": "Gurmukhi", "or": "Oriya",
+}
+
+
+@lru_cache(maxsize=384)
+def social_font(lang: str, size: int, bold: bool = False) -> Any:
+    """Load a local font with shaping support; no remote font request is needed."""
+    if ImageFont is None:
+        return None
+    candidates: list[str] = []
+    script = _SOCIAL_SCRIPT_NAMES.get(lang)
+    if script:
+        weight = "Bold" if bold else "Regular"
+        # Lohit faces include Latin, digits and punctuation as well as the
+        # target Indic script, which prevents missing-glyph boxes in mixed
+        # strings such as "11 Sept · Friday" and "1:26 AM".
+        lohit_paths = {
+            "Devanagari": "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
+            "Gujarati": "/usr/share/fonts/truetype/lohit-gujarati/Lohit-Gujarati.ttf",
+            "Bengali": "/usr/share/fonts/truetype/lohit-bengali/Lohit-Bengali.ttf",
+            "Tamil": "/usr/share/fonts/truetype/lohit-tamil/Lohit-Tamil.ttf",
+            "Telugu": "/usr/share/fonts/truetype/lohit-telugu/Lohit-Telugu.ttf",
+            "Kannada": "/usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf",
+            "Malayalam": "/usr/share/fonts/truetype/lohit-malayalam/Lohit-Malayalam.ttf",
+            "Oriya": "/usr/share/fonts/truetype/lohit-oriya/Lohit-Odia.ttf",
+            "Gurmukhi": "/usr/share/fonts/opentype/freefont/FreeSansBold.otf" if bold else "/usr/share/fonts/opentype/freefont/FreeSans.otf",
+        }
+        if script in lohit_paths:
+            candidates.append(lohit_paths[script])
+        candidates.extend([
+            f"/usr/share/fonts/truetype/noto/NotoSans{script}-{weight}.ttf",
+            "/usr/share/fonts/opentype/freefont/FreeSansBold.otf" if bold else "/usr/share/fonts/opentype/freefont/FreeSans.otf",
+        ])
+    else:
+        candidates.extend([
+            "/usr/share/fonts/opentype/inter/InterDisplay-ExtraBold.otf" if bold else "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
+            "/usr/share/fonts/opentype/inter/Inter-Bold.otf" if bold else "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
+        ])
+    candidates.extend([
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ])
+    layout = getattr(getattr(ImageFont, "Layout", object()), "RAQM", None)
+    for font_path in candidates:
+        if not os.path.exists(font_path):
+            continue
+        try:
+            kwargs = {"layout_engine": layout} if layout is not None else {}
+            return ImageFont.truetype(font_path, size=size, **kwargs)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def social_text_width(draw: Any, text: str, font: Any) -> float:
+    try:
+        return float(draw.textlength(text, font=font))
+    except Exception:
+        box = draw.textbbox((0, 0), text, font=font)
+        return float(box[2] - box[0])
+
+
+def fit_social_font(
+    draw: Any,
+    text: str,
+    lang: str,
+    max_width: float,
+    max_size: int,
+    min_size: int,
+    bold: bool = False,
+) -> Any:
+    """Return the largest local font that keeps a single line inside max_width."""
+    for size in range(max_size, min_size - 1, -1):
+        font = social_font(lang, size, bold)
+        if social_text_width(draw, text, font) <= max_width:
+            return font
+    return social_font(lang, min_size, bold)
+
+
+def truncate_social_text(draw: Any, text: str, font: Any, max_width: float) -> str:
+    if social_text_width(draw, text, font) <= max_width:
+        return text
+    ellipsis = "…"
+    chars = list(text)
+    while chars and social_text_width(draw, "".join(chars).rstrip() + ellipsis, font) > max_width:
+        chars.pop()
+    return ("".join(chars).rstrip() + ellipsis) if chars else ellipsis
+
+
+def _mix_rgb(first: tuple[int, int, int], second: tuple[int, int, int], amount: float) -> tuple[int, int, int, int]:
+    return (
+        round(first[0] + (second[0] - first[0]) * amount),
+        round(first[1] + (second[1] - first[1]) * amount),
+        round(first[2] + (second[2] - first[2]) * amount),
+        255,
+    )
+
+
+def _draw_social_sun(draw: Any, center: tuple[int, int], radius: int, color: tuple[int, int, int, int]) -> None:
+    cx, cy = center
+    for angle in range(0, 360, 45):
+        radians = math.radians(angle)
+        x1 = cx + math.cos(radians) * (radius + 7)
+        y1 = cy + math.sin(radians) * (radius + 7)
+        x2 = cx + math.cos(radians) * (radius + 16)
+        y2 = cy + math.sin(radians) * (radius + 16)
+        draw.line((x1, y1, x2, y2), fill=color, width=3)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=color, width=4)
+    draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), fill=color)
+
+
+def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
+    """Render a 1200×630 preview using the same live values and visual language as the page."""
+    if Image is None or ImageDraw is None or ImageFont is None:
+        return base64.b64decode(OG_IMAGE_B64)
+
+    width, height = 1200, 630
+    top_color = (4, 19, 28)
+    bottom_color = (7, 37, 51)
+    canvas = Image.new("RGBA", (width, height), top_color + (255,))
+    draw = ImageDraw.Draw(canvas)
+    for y in range(height):
+        draw.line((0, y, width, y), fill=_mix_rgb(top_color, bottom_color, y / max(1, height - 1)))
+
+    # Soft golden, cyan and lavender light fields mirror the application background.
+    glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.ellipse((-280, -270, 460, 470), fill=(244, 189, 79, 74))
+    glow_draw.ellipse((880, -220, 1470, 380), fill=(105, 221, 234, 70))
+    glow_draw.ellipse((720, 440, 1360, 860), fill=(185, 180, 255, 42))
+    glow = glow.filter(ImageFilter.GaussianBlur(92)) if ImageFilter is not None else glow
+    canvas = Image.alpha_composite(canvas, glow)
+    draw = ImageDraw.Draw(canvas)
+
+    margin = 34
+    header_box = (margin, 24, width - margin, 148)
+    draw.rounded_rectangle(header_box, radius=31, fill=(12, 39, 52, 232), outline=(105, 221, 234, 104), width=2)
+    icon_box = (54, 45, 134, 125)
+    draw.rounded_rectangle(icon_box, radius=24, fill=(244, 189, 79, 31), outline=(244, 189, 79, 118), width=2)
+    _draw_social_sun(draw, (94, 85), 14, (255, 209, 107, 255))
+
+    lang = context["lang"]
+    title_text = tr(lang, "panchang")
+    title_font = fit_social_font(draw, title_text, lang, 620, 49, 36, True)
+    draw.text((158, 43), title_text, font=title_font, fill=(246, 252, 255, 255))
+
+    subtitle = f"{context['place']}  •  {format_date_label(context['date'], lang)}  •  {format_clock(context['at'])}"
+    subtitle_font = fit_social_font(draw, subtitle, lang, 780, 27, 19, True)
+    subtitle_text = truncate_social_text(draw, subtitle, subtitle_font, 780)
+    draw.text((158, 98), subtitle_text, font=subtitle_font, fill=(205, 227, 237, 255))
+
+    live_text = tr(lang, "live") if context.get("social_live", context.get("live")) else tr(lang, "selected")
+    live_font = social_font(lang, 16, True)
+    live_width = social_text_width(draw, live_text, live_font)
+    live_left = width - margin - live_width - 38
+    live_box = (live_left, 45, width - margin - 16, 79)
+    draw.rounded_rectangle(live_box, radius=17, fill=(105, 221, 234, 235), outline=(184, 246, 249, 255), width=2)
+    draw.text((live_left + 19, 53), live_text, font=live_font, fill=(4, 31, 39, 255))
+
+    timezone_text = context["timezone"]
+    timezone_font = social_font("en", 14, True)
+    timezone_width = social_text_width(draw, timezone_text, timezone_font)
+    draw.text((width - margin - timezone_width - 16, 106), timezone_text, font=timezone_font, fill=(138, 180, 198, 255))
+
+    accents = [
+        (99, 218, 194), (244, 189, 79), (241, 132, 170), (255, 158, 141), (117, 212, 225),
+        (255, 185, 127), (185, 180, 255), (115, 158, 232), (222, 128, 174), (98, 221, 180),
+    ]
+    card_gap_x = 16
+    card_gap_y = 8
+    card_width = (width - margin * 2 - card_gap_x) // 2
+    card_height = 76
+    cards_top = 164
+
+    for index, section in enumerate(data["sections"][:10]):
+        column = index % 2
+        row = index // 2
+        x1 = margin + column * (card_width + card_gap_x)
+        y1 = cards_top + row * (card_height + card_gap_y)
+        x2 = x1 + card_width
+        y2 = y1 + card_height
+        accent = accents[index % len(accents)]
+        item = current_or_focused(section.get("items", []))
+        quality = item.get("quality", "neutral") if item else "neutral"
+        if quality == "auspicious":
+            fill = (13, 57, 52, 224)
+            border = (98, 221, 180, 165)
+        elif quality == "inauspicious":
+            fill = (64, 36, 47, 224)
+            border = (255, 137, 149, 165)
+        else:
+            fill = (18, 41, 54, 224)
+            border = accent + (128,)
+
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=18, fill=fill, outline=border, width=2)
+        draw.rounded_rectangle((x1 + 1, y1 + 1, x1 + 7, y2 - 1), radius=4, fill=accent + (255,))
+        circle = (x1 + 17, y1 + 18, x1 + 55, y1 + 56)
+        draw.ellipse(circle, fill=accent + (32,), outline=accent + (145,), width=2)
+        number_text = str(index + 1)
+        number_font = social_font("en", 15, True)
+        number_box = draw.textbbox((0, 0), number_text, font=number_font)
+        number_x = x1 + 36 - (number_box[2] - number_box[0]) / 2
+        number_y = y1 + 37 - (number_box[3] - number_box[1]) / 2 - number_box[1]
+        draw.text((number_x, number_y), number_text, font=number_font, fill=accent + (255,))
+
+        label_x = x1 + 68
+        content_right = x2 - 15
+        label = str(section.get("label", ""))
+        label_font = fit_social_font(draw, label, lang, 285, 16, 12, True)
+        label = truncate_social_text(draw, label, label_font, 285)
+        draw.text((label_x, y1 + 7), label, font=label_font, fill=accent + (255,))
+
+        badge_parts: list[str] = []
+        if item.get("current"):
+            badge_parts.append(str(item.get("badge") or tr(lang, "now")))
+        if quality == "auspicious":
+            badge_parts.append(tr(lang, "good"))
+        elif quality == "inauspicious":
+            badge_parts.append(tr(lang, "avoid"))
+        badge_text = " · ".join(badge_parts[:2])
+        badge_reserved = 0
+        if badge_text:
+            badge_font = fit_social_font(draw, badge_text, lang, 175, 13, 10, True)
+            badge_text = truncate_social_text(draw, badge_text, badge_font, 175)
+            badge_width = social_text_width(draw, badge_text, badge_font) + 20
+            badge_reserved = badge_width + 10
+            badge_color = (98, 221, 180) if quality == "auspicious" else (255, 137, 149) if quality == "inauspicious" else (105, 221, 234)
+            badge_left = x2 - 13 - badge_width
+            draw.rounded_rectangle((badge_left, y1 + 7, x2 - 13, y1 + 29), radius=11, fill=badge_color + (47,), outline=badge_color + (155,), width=1)
+            draw.text((badge_left + 10, y1 + 11), badge_text, font=badge_font, fill=(239, 252, 255, 255))
+
+        value = str(item.get("title", "—"))
+        value_width = max(120, content_right - label_x)
+        value_font = fit_social_font(draw, value, lang, value_width, 22, 16, True)
+        value = truncate_social_text(draw, value, value_font, value_width)
+        draw.text((label_x, y1 + 27), value, font=value_font, fill=(247, 252, 255, 255))
+
+        timing = str(item.get("time", ""))
+        timing_font = fit_social_font(draw, timing, lang, value_width, 14, 10, False)
+        timing = truncate_social_text(draw, timing, timing_font, value_width)
+        draw.text((label_x, y1 + 54), timing, font=timing_font, fill=(180, 208, 220, 255))
+
+    footer_y = 596
+    draw.line((margin + 8, footer_y - 10, width - margin - 8, footer_y - 10), fill=(193, 225, 237, 38), width=1)
+    site_text = site_root().replace("https://", "").replace("http://", "").split("/")[0] or APP_NAME
+    site_font = social_font("en", 15, True)
+    draw.text((margin + 8, footer_y), site_text, font=site_font, fill=(244, 205, 111, 255))
+    footer_message = f"{TIMELINE_FUTURE_ITEMS}+ upcoming values in every timeline  •  tap to explore"
+    footer_font = social_font("en", 15, True)
+    footer_width = social_text_width(draw, footer_message, footer_font)
+    draw.text((width - margin - 8 - footer_width, footer_y), footer_message, font=footer_font, fill=(170, 215, 228, 255))
+
+    output = io.BytesIO()
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
 def embedded_asset(encoded: str, mimetype: str, filename: str) -> Response:
     response = Response(base64.b64decode(encoded), mimetype=mimetype)
     response.headers["Content-Disposition"] = f'inline; filename="{filename}"'
@@ -4691,7 +5252,24 @@ def icon_512() -> Response:
 
 @app.get("/og.png")
 def open_graph_image() -> Response:
-    return embedded_asset(OG_IMAGE_B64, "image/png", "panchang-social.png")
+    try:
+        context = resolve_context()
+        context["social_live"] = request.args.get("mode") == "live"
+        data = build_panchang(context)
+        payload = render_social_image(context, data)
+        response = Response(payload, mimetype="image/png")
+        response.headers["Content-Disposition"] = 'inline; filename="panchang-social.png"'
+        response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except Exception:
+        app.logger.exception("Dynamic social image rendering failed")
+        fallback = Response(base64.b64decode(OG_IMAGE_B64), mimetype="image/png")
+        fallback.headers["Content-Disposition"] = 'inline; filename="panchang-social.png"'
+        fallback.headers["Cache-Control"] = "public, max-age=300"
+        fallback.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        return fallback
 
 
 @app.get("/favicon.ico")
@@ -4716,7 +5294,7 @@ def openapi_document() -> Response:
                 "get": {
                     "operationId": "getPanchang",
                     "summary": "Get Panchang for a place, date and local time",
-                    "description": "Returns prior, active and upcoming intervals for all ten visible Panchang elements.",
+                    "description": "Returns prior, active and at least 12 upcoming intervals for all ten visible Panchang elements.",
                     "parameters": [
                         {"name": "place", "in": "query", "schema": {"type": "string", "default": "Ujjain"}},
                         {"name": "lat", "in": "query", "description": "Latitude; defaults to Ujjain", "schema": {"type": "number", "minimum": -89.8, "maximum": 89.8, "default": 23.1765}},
@@ -4815,7 +5393,7 @@ def llms_txt() -> Response:
 - OpenAPI 3.1: {root}/openapi.json
 
 ## Data returned
-Every Panchang response includes server-rendered and JSON representations of sunrise, sunset, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, special Muhurta/current period, and Lagna. Each timeline includes earlier, active/selected, and upcoming values with ISO start/end timestamps where applicable.
+Every Panchang response includes server-rendered and JSON representations of sunrise, sunset, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, special Muhurta/current period, and Lagna. Each timeline includes earlier, active/selected, and at least 12 upcoming values with ISO start/end timestamps where applicable.
 
 ## Calculation method
 Lahiri ayanamsa; Swiss Ephemeris Moshier planetary positions; local astronomical sunrise/sunset; traditional variable-length Choghadiya and planetary Hora divisions. Timings depend on coordinates, IANA timezone, date and local time. Important religious observances should be verified with a qualified practitioner because regional traditions can differ.
