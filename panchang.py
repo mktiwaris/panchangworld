@@ -4586,6 +4586,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="keywords" content="Panchang, Panchangam, {{ context.place }}, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, Muhurta, Lagna, sunrise, sunset">
 
   <title>{{ seo.title }}</title>
+  <script src="/global.js" defer></script>
   <link rel="canonical" href="{{ seo.canonical }}">
   {% for code, href in seo.alternates.items() %}<link rel="alternate" hreflang="{{ code }}" href="{{ href }}">
   {% endfor %}
