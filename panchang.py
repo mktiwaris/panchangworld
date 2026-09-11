@@ -16,6 +16,7 @@ network service, review and comply with the Swiss Ephemeris/pyswisseph license.
 from __future__ import annotations
 
 import base64
+import glob
 import html
 import io
 import json
@@ -57,7 +58,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -155,6 +156,10 @@ EN_TEXT = {
     "refreshed": "Panchang refreshed.",
     "auto_refresh": "Automatically refreshes every minute",
     "location_fallback": "Location is unavailable, so Ujjain is being shown.",
+    "share_preview": "Social sharing preview",
+    "share_preview_help": "This is the image shown when this Panchang link is shared.",
+    "share_image_alt": "Panchang social sharing image",
+    "upcoming_values": "upcoming values",
 }
 
 TEXT_OVERRIDES: dict[str, dict[str, str]] = {
@@ -305,6 +310,61 @@ THEME_TEXT: dict[str, dict[str, str]] = {
 }
 for _language_code, _theme_values in THEME_TEXT.items():
     TEXT_OVERRIDES.setdefault(_language_code, {}).update(_theme_values)
+
+
+SHARE_TEXT: dict[str, dict[str, str]] = {
+    "hi": {
+        "share_preview": "सोशल शेयर पूर्वावलोकन", "share_preview_help": "पंचांग लिंक साझा करने पर यही चित्र दिखाई देगा।",
+        "share_image_alt": "पंचांग साझा चित्र", "upcoming_values": "आगामी मान",
+    },
+    "mr": {
+        "share_preview": "सोशल शेअर पूर्वदृश्य", "share_preview_help": "पंचांगाची लिंक शेअर केल्यावर ही प्रतिमा दिसेल.",
+        "share_image_alt": "पंचांग शेअर प्रतिमा", "upcoming_values": "पुढील मूल्ये", "mixed": "मिश्र", "live": "थेट",
+    },
+    "gu": {
+        "share_preview": "સોશિયલ શેર પૂર્વદર્શન", "share_preview_help": "પંચાંગની લિંક શેર કરતાં આ ચિત્ર દેખાશે.",
+        "share_image_alt": "પંચાંગ શેર ચિત્ર", "upcoming_values": "આગામી મૂલ્યો", "mixed": "મિશ્ર", "live": "લાઇવ",
+    },
+    "bn": {
+        "share_preview": "সামাজিক শেয়ার পূর্বরূপ", "share_preview_help": "পঞ্জিকার লিঙ্ক শেয়ার করলে এই ছবিটি দেখা যাবে।",
+        "share_image_alt": "পঞ্জিকা শেয়ার ছবি", "upcoming_values": "আসন্ন মান", "mixed": "মিশ্র", "live": "লাইভ",
+    },
+    "ta": {
+        "share_preview": "சமூக பகிர்வு முன்னோட்டம்", "share_preview_help": "பஞ்சாங்க இணைப்பைப் பகிரும்போது இந்தப் படம் தோன்றும்.",
+        "share_image_alt": "பஞ்சாங்க பகிர்வு படம்", "upcoming_values": "வரவிருக்கும் மதிப்புகள்", "mixed": "கலப்பு", "live": "நேரலை",
+    },
+    "te": {
+        "share_preview": "సామాజిక భాగస్వామ్య ముందస్తు చిత్రం", "share_preview_help": "పంచాంగం లింక్‌ను పంచుకున్నప్పుడు ఈ చిత్రం కనిపిస్తుంది.",
+        "share_image_alt": "పంచాంగం భాగస్వామ్య చిత్రం", "upcoming_values": "రాబోయే విలువలు", "mixed": "మిశ్రమం", "live": "లైవ్",
+    },
+    "kn": {
+        "share_preview": "ಸಾಮಾಜಿಕ ಹಂಚಿಕೆ ಮುನ್ನೋಟ", "share_preview_help": "ಪಂಚಾಂಗದ ಕೊಂಡಿಯನ್ನು ಹಂಚಿದಾಗ ಈ ಚಿತ್ರ ಕಾಣಿಸುತ್ತದೆ.",
+        "share_image_alt": "ಪಂಚಾಂಗ ಹಂಚಿಕೆ ಚಿತ್ರ", "upcoming_values": "ಮುಂದಿನ ಮೌಲ್ಯಗಳು", "mixed": "ಮಿಶ್ರ", "live": "ಲೈವ್",
+    },
+    "ml": {
+        "share_preview": "സാമൂഹിക പങ്കിടൽ പ്രിവ്യൂ", "share_preview_help": "പഞ്ചാംഗ ലിങ്ക് പങ്കിടുമ്പോൾ ഈ ചിത്രം കാണിക്കും.",
+        "share_image_alt": "പഞ്ചാംഗ പങ്കിടൽ ചിത്രം", "upcoming_values": "വരാനിരിക്കുന്ന മൂല്യങ്ങൾ", "mixed": "മിശ്രം", "live": "ലൈവ്",
+    },
+    "pa": {
+        "share_preview": "ਸਮਾਜਿਕ ਸਾਂਝ ਪੂਰਵ-ਝਲਕ", "share_preview_help": "ਪੰਚਾਂਗ ਲਿੰਕ ਸਾਂਝਾ ਕਰਨ ਵੇਲੇ ਇਹ ਤਸਵੀਰ ਦਿਖਾਈ ਦੇਵੇਗੀ।",
+        "share_image_alt": "ਪੰਚਾਂਗ ਸਾਂਝੀ ਤਸਵੀਰ", "upcoming_values": "ਆਉਣ ਵਾਲੇ ਮੁੱਲ", "mixed": "ਮਿਸ਼ਰਤ", "live": "ਲਾਈਵ",
+    },
+    "or": {
+        "share_preview": "ସାମାଜିକ ଅଂଶୀଦାର ପୂର୍ବଦୃଶ୍ୟ", "share_preview_help": "ପଞ୍ଚାଙ୍ଗ ଲିଙ୍କ ଅଂଶୀଦାର କଲେ ଏହି ଛବି ଦେଖାଯିବ।",
+        "share_image_alt": "ପଞ୍ଚାଙ୍ଗ ଅଂଶୀଦାର ଛବି", "upcoming_values": "ଆଗାମୀ ମୂଲ୍ୟ", "mixed": "ମିଶ୍ର", "live": "ଲାଇଭ୍",
+    },
+    "ne": {
+        "share_preview": "सामाजिक साझेदारी पूर्वावलोकन", "share_preview_help": "पञ्चाङ्गको लिङ्क साझा गर्दा यही चित्र देखिन्छ।",
+        "share_image_alt": "पञ्चाङ्ग साझा चित्र", "upcoming_values": "आगामी मान", "mixed": "मिश्रित", "live": "लाइभ",
+    },
+    "sa": {
+        "share_preview": "सामाजिक-वितरण-पूर्वदृश्यम्", "share_preview_help": "पञ्चाङ्गस्य सम्बन्धकं वितरति चेत् इदं चित्रं दृश्यते।",
+        "share_image_alt": "पञ्चाङ्ग-वितरण-चित्रम्", "upcoming_values": "आगामिमूल्यानि", "mixed": "मिश्रम्", "live": "सजीवम्",
+    },
+}
+for _language_code, _share_values in SHARE_TEXT.items():
+    TEXT_OVERRIDES.setdefault(_language_code, {}).update(_share_values)
+
 
 def ui_text(lang: str) -> dict[str, str]:
     result = dict(EN_TEXT)
@@ -555,6 +615,25 @@ def resolve_context(
 
 EN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"]
 EN_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAY_NAMES: dict[str, list[str]] = {
+    "en": EN_WEEKDAYS,
+    "hi": ["सोमवार", "मंगलवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार", "रविवार"],
+    "mr": ["सोमवार", "मंगळवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार", "रविवार"],
+    "gu": ["સોમવાર", "મંગળવાર", "બુધવાર", "ગુરુવાર", "શુક્રવાર", "શનિવાર", "રવિવાર"],
+    "bn": ["সোমবার", "মঙ্গলবার", "বুধবার", "বৃহস্পতিবার", "শুক্রবার", "শনিবার", "রবিবার"],
+    "ta": ["திங்கள்", "செவ்வாய்", "புதன்", "வியாழன்", "வெள்ளி", "சனி", "ஞாயிறு"],
+    "te": ["సోమవారం", "మంగళవారం", "బుధవారం", "గురువారం", "శుక్రవారం", "శనివారం", "ఆదివారం"],
+    "kn": ["ಸೋಮವಾರ", "ಮಂಗಳವಾರ", "ಬುಧವಾರ", "ಗುರುವಾರ", "ಶುಕ್ರವಾರ", "ಶನಿವಾರ", "ಭಾನುವಾರ"],
+    "ml": ["തിങ്കളാഴ്ച", "ചൊവ്വാഴ്ച", "ബുധനാഴ്ച", "വ്യാഴാഴ്ച", "വെള്ളിയാഴ്ച", "ശനിയാഴ്ച", "ഞായറാഴ്ച"],
+    "pa": ["ਸੋਮਵਾਰ", "ਮੰਗਲਵਾਰ", "ਬੁੱਧਵਾਰ", "ਵੀਰਵਾਰ", "ਸ਼ੁੱਕਰਵਾਰ", "ਸ਼ਨੀਵਾਰ", "ਐਤਵਾਰ"],
+    "or": ["ସୋମବାର", "ମଙ୍ଗଳବାର", "ବୁଧବାର", "ଗୁରୁବାର", "ଶୁକ୍ରବାର", "ଶନିବାର", "ରବିବାର"],
+    "ne": ["सोमबार", "मंगलबार", "बुधबार", "बिहीबार", "शुक्रबार", "शनिबार", "आइतबार"],
+    "sa": ["सोमवासरः", "मङ्गलवासरः", "बुधवासरः", "गुरुवासरः", "शुक्रवासरः", "शनिवासरः", "रविवासरः"],
+}
+
+
+def localized_weekday(value: date, lang: str) -> str:
+    return WEEKDAY_NAMES.get(lang, EN_WEEKDAYS)[value.weekday()]
 
 
 def ordinal(day: int) -> str:
@@ -591,24 +670,40 @@ def format_compact_header(value: datetime, place: str, lang: str) -> str:
     return f"{tr(lang, 'panchang')} · {place} · {date_text} · {compact_clock}"
 
 
-def format_point(value: datetime, reference: date) -> str:
-    if value.date() == reference:
-        return format_clock(value)
-    return f"{value.day} {EN_MONTHS[value.month - 1]} · {format_clock(value)}"
+def format_card_date(value: date, lang: str = "en") -> str:
+    """Compact, unambiguous date shown on every timeline card."""
+    if lang == "en":
+        return f"{value.day} {EN_MONTHS[value.month - 1]} {value.year}"
+    return f"{value.day:02d}-{value.month:02d}-{value.year}"
 
 
-def format_range(start: datetime, end: datetime, reference: date) -> str:
+def format_card_date_range(start: date, end: date, lang: str = "en") -> str:
+    if start == end:
+        return format_card_date(start, lang)
+    if lang == "en":
+        if start.year == end.year:
+            return f"{start.day} {EN_MONTHS[start.month - 1]} – {end.day} {EN_MONTHS[end.month - 1]} {end.year}"
+        return f"{format_card_date(start, lang)} – {format_card_date(end, lang)}"
+    if start.year == end.year:
+        return f"{start.day:02d}-{start.month:02d} – {end.day:02d}-{end.month:02d}-{end.year}"
+    return f"{format_card_date(start, lang)} – {format_card_date(end, lang)}"
+
+
+def format_clock_range(start: datetime, end: datetime) -> str:
     offset_changes = start.utcoffset() != end.utcoffset()
     start_clock = f"{format_clock(start)} {start.tzname() or ''}".strip() if offset_changes else format_clock(start)
     end_clock = f"{format_clock(end)} {end.tzname() or ''}".strip() if offset_changes else format_clock(end)
-    if start.date() == end.date() == reference:
-        return f"{start_clock} – {end_clock}"
-    if start.date() == end.date():
-        return f"{start.day} {EN_MONTHS[start.month - 1]} · {start_clock} – {end_clock}"
-    return (
-        f"{start.day} {EN_MONTHS[start.month - 1]} {start_clock} – "
-        f"{end.day} {EN_MONTHS[end.month - 1]} {end_clock}"
-    )
+    return f"{start_clock} – {end_clock}"
+
+
+def format_point(value: datetime, reference: date, lang: str = "en") -> str:
+    del reference  # retained for backward-compatible internal calls
+    return f"{format_card_date(value.date(), lang)} · {format_clock(value)}"
+
+
+def format_range(start: datetime, end: datetime, reference: date, lang: str = "en") -> str:
+    del reference  # retained for backward-compatible internal calls
+    return f"{format_card_date_range(start.date(), end.date(), lang)} · {format_clock_range(start, end)}"
 
 
 def iso_minute(value: datetime) -> str:
@@ -813,9 +908,13 @@ def interval_item(
     detail: str = "",
 ) -> dict[str, Any]:
     current = instant_contains(start, at, end) if focus is None else focus
+    date_text = format_card_date_range(start.date(), end.date(), lang)
+    clock_text = format_clock_range(start, end)
     return {
         "title": title,
-        "time": format_range(start, end, at.date()),
+        "date": date_text,
+        "clock": clock_text,
+        "time": f"{date_text} · {clock_text}",
         "start": iso_minute(start),
         "end": iso_minute(end),
         "current": bool(current),
@@ -905,13 +1004,20 @@ def sun_pair(local_date: date, latitude: float, longitude: float, tz_name: str) 
 
 def point_item(title: str, value: datetime | None, at: datetime, lang: str, focus: bool) -> dict[str, Any]:
     if value is None:
+        date_text = format_card_date(at.date(), lang)
+        clock_text = tr(lang, "solar_unavailable")
         return {
-            "title": title, "time": tr(lang, "solar_unavailable"), "start": "", "end": "",
-            "current": focus, "quality": "neutral", "detail": "", "badge": tr(lang, "selected") if focus else "",
+            "title": title, "date": date_text, "clock": clock_text, "time": f"{date_text} · {clock_text}",
+            "start": "", "end": "", "current": focus, "quality": "neutral", "detail": "",
+            "badge": tr(lang, "selected") if focus else "",
         }
+    date_text = format_card_date(value.date(), lang)
+    clock_text = format_clock(value)
     return {
         "title": title,
-        "time": format_point(value, at.date()),
+        "date": date_text,
+        "clock": clock_text,
+        "time": f"{date_text} · {clock_text}",
         "start": iso_minute(value),
         "end": "",
         "current": focus,
@@ -926,8 +1032,8 @@ def make_sun_timeline(event: str, at: datetime, latitude: float, longitude: floa
     for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
         day = at.date() + timedelta(days=offset)
         value = sun_event(day, latitude, longitude, tz_name, event)
-        weekday = EN_WEEKDAYS[day.weekday()]
-        title = f"{day.day} {EN_MONTHS[day.month - 1]} · {weekday}"
+        weekday = localized_weekday(day, lang)
+        title = weekday
         items.append(point_item(title, value, at, lang, offset == 0))
     return items
 
@@ -944,13 +1050,16 @@ def make_sunrise_sunset_timeline(
     for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
         day = at.date() + timedelta(days=offset)
         sunrise, sunset = sun_pair(day, latitude, longitude, tz_name)
-        weekday = EN_WEEKDAYS[day.weekday()]
-        title = f"{day.day} {EN_MONTHS[day.month - 1]} · {weekday}"
+        title = localized_weekday(day, lang)
+        date_text = format_card_date(day, lang)
         sunrise_text = format_clock(sunrise) if sunrise else "—"
         sunset_text = format_clock(sunset) if sunset else "—"
+        clock_text = f"{sunrise_text} · {sunset_text}"
         items.append({
             "title": title,
-            "time": f"↑ {sunrise_text} · ↓ {sunset_text}",
+            "date": date_text,
+            "clock": clock_text,
+            "time": f"{date_text} · {clock_text}",
             "start": iso_minute(sunrise) if sunrise else "",
             "end": iso_minute(sunset) if sunset else "",
             "current": offset == 0,
@@ -1026,10 +1135,13 @@ def unavailable_timeline(at: datetime, lang: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
         day = at.date() + timedelta(days=offset)
-        title = f"{day.day} {EN_MONTHS[day.month - 1]} · {tr(lang, 'not_available')}"
+        date_text = format_card_date(day, lang)
+        clock_text = tr(lang, "solar_unavailable")
         items.append({
-            "title": title,
-            "time": tr(lang, "solar_unavailable"),
+            "title": f"{localized_weekday(day, lang)} · {tr(lang, 'not_available')}",
+            "date": date_text,
+            "clock": clock_text,
+            "time": f"{date_text} · {clock_text}",
             "start": "",
             "end": "",
             "current": offset == 0,
@@ -1368,9 +1480,9 @@ def api_url(context: dict[str, Any]) -> str:
 
 
 def og_image_url(context: dict[str, Any]) -> str:
-    # A minute-specific, extension-bearing path gives social crawlers a fresh
-    # immutable image URL instead of reusing a stale query-only cache entry.
-    # The image endpoint accepts the explicit minute only for social rendering.
+    # Keep the language in the path, not only in a query string. Social-media
+    # image caches then receive a distinct, extension-bearing resource for
+    # every language and minute.
     snapshot = context["at"].strftime("%Y%m%d%H%M")
     params = {
         "place": context["place"], "lat": f"{context['latitude']:.6f}", "lon": f"{context['longitude']:.6f}",
@@ -1379,7 +1491,7 @@ def og_image_url(context: dict[str, Any]) -> str:
     }
     if context.get("country"):
         params["country"] = context["country"]
-    return f"{site_root()}/og/{snapshot}.png?{urlencode(params)}"
+    return f"{site_root()}/og/{context['lang']}/{snapshot}.png?{urlencode(params)}"
 
 
 def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
@@ -1409,7 +1521,11 @@ def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]
     canonical = canonical_url(context)
     alternates = {code: canonical_url(context, code) for code in LANGUAGES}
     alternates["x-default"] = canonical_url(context, "en")
-    return {"title": title[:200], "description": description[:320], "canonical": canonical, "alternates": alternates, "og_image": og_image_url(context)}
+    image_alt = f"{tr(lang, 'share_image_alt')}: {context['place']}, {date_local}"
+    return {
+        "title": title[:200], "description": description[:320], "canonical": canonical,
+        "alternates": alternates, "og_image": og_image_url(context), "image_alt": image_alt[:220],
+    }
 
 
 def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, Any]) -> dict[str, Any]:
@@ -1476,6 +1592,8 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "measurementTechnique": data["method"],
         })
         additional_properties: list[dict[str, Any]] = [
+            {"@type": "PropertyValue", "name": "Display date", "value": item.get("date", "")},
+            {"@type": "PropertyValue", "name": "Display time", "value": item.get("clock", "")},
             {"@type": "PropertyValue", "name": "Display timing", "value": item.get("time", "")},
             {"@type": "PropertyValue", "name": "Classification", "value": item.get("quality", "neutral")},
             {"@type": "PropertyValue", "name": "Timezone", "value": context["timezone"]},
@@ -1615,6 +1733,8 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "inLanguage": context["lang"],
             "isPartOf": {"@id": website_id},
             "about": [{"@id": place_id}, {"@id": terms_id}],
+            "contentLocation": {"@id": place_id},
+            "associatedMedia": {"@id": image_id},
             "mainEntity": {"@id": dataset_id},
             "dateModified": data["generated_at"],
             "isAccessibleForFree": True,
@@ -1776,7 +1896,9 @@ body {
     radial-gradient(55vmax 44vmax at 108% 0%, rgba(83, 203, 211, .20), transparent 60%),
     linear-gradient(145deg, var(--bg-soft), var(--bg));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
-    "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Tamil", "Noto Sans Telugu", sans-serif;
+    "Noto Sans Devanagari", "Noto Sans Gujarati", "Noto Sans Bengali", "Noto Sans Tamil",
+    "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Malayalam", "Noto Sans Gurmukhi",
+    "Noto Sans Oriya", "Noto Sans Odia", "Nirmala UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -1832,8 +1954,8 @@ html[data-theme="dark"] .day-carousel {
   display: grid; place-items: center; padding: 0 calc(var(--header-right-space) + 7px) 0 calc(var(--header-left-space) + 7px);
 }
 .day-title {
-  display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: hidden;
-  color: var(--text); font-size: clamp(18px, 2.55vw, 41px); line-height: 1; font-weight: 900; letter-spacing: -.045em;
+  display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: visible;
+  color: var(--text); font-size: clamp(18px, 2.55vw, 41px); line-height: 1.16; padding-block: .08em; font-weight: 900; letter-spacing: -.045em;
   font-variant-numeric: tabular-nums;
 }
 .header-compact { display: none; }
@@ -1923,8 +2045,8 @@ html[data-theme="dark"] .metric-label { border-right-color: rgba(229,240,246,.12
 }
 html[data-theme="dark"] .metric-icon { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.13); box-shadow: none; }
 .metric-label h2 {
-  min-width: 0; margin: 0; color: var(--text); font-size: clamp(13px, 2.05vh, 20px); line-height: 1.02;
-  font-weight: 880; letter-spacing: -.025em; overflow-wrap: normal; word-break: normal; hyphens: none; text-wrap: balance;
+  min-width: 0; margin: 0; color: var(--text); font-size: clamp(13px, 2.05vh, 20px); line-height: 1.16;
+  padding-block: .07em; font-weight: 880; letter-spacing: -.025em; overflow-wrap: normal; word-break: normal; hyphens: none; text-wrap: balance;
 }
 .blank-label { padding: 0; }
 .timeline-wrap { min-width: 0; min-height: 0; position: relative; overflow: hidden; background: var(--rail-bg); }
@@ -1942,9 +2064,9 @@ html[data-theme="dark"] .metric-icon { background: rgba(255,255,255,.07); border
 .moment {
   --quality-color: transparent; --quality-bg: var(--neutral-bg); --focus-border: var(--row-accent);
   flex: 0 0 clamp(286px, 29.5vw, 420px); min-width: 0; height: 100%; scroll-snap-align: start;
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 1fr 1fr; align-items: center;
-  column-gap: clamp(6px, .8vw, 12px); padding: 0 clamp(10px, 1.15vw, 16px); border-radius: calc(var(--radius) - 3px);
-  border: 2px solid transparent; background: var(--quality-bg); color: var(--text);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr); align-content: center;
+  column-gap: clamp(6px, .8vw, 12px); row-gap: 1px; padding: clamp(3px, .42vh, 6px) clamp(10px, 1.15vw, 16px);
+  border-radius: calc(var(--radius) - 3px); border: 2px solid transparent; background: var(--quality-bg); color: var(--text);
   transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
   position: relative; contain: layout paint; font-variant-numeric: tabular-nums;
 }
@@ -1962,15 +2084,21 @@ html[data-theme="dark"] .moment:hover { filter: brightness(1.06); }
 html[data-theme="dark"] .moment.is-current { box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset, 0 5px 16px rgba(0,0,0,.18); }
 .moment.is-current.neutral::before { background: var(--row-accent); }
 .moment-title {
-  grid-column: 1; grid-row: 1; align-self: end; min-width: 0; padding-bottom: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(14px, 2.12vh, 20px);
-  line-height: 1.02; font-weight: 900; letter-spacing: -.022em;
+  grid-column: 1; grid-row: 1; align-self: end; min-width: 0; padding-block: .07em .02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(14px, 2.05vh, 19px);
+  line-height: 1.16; font-weight: 900; letter-spacing: -.018em;
 }
+.moment-meta {
+  grid-column: 1; grid-row: 2; align-self: start; min-width: 0; display: flex; flex-direction: column;
+  gap: 0; color: var(--muted); line-height: 1.12; overflow: hidden;
+}
+.moment-date,
 .moment-time {
-  grid-column: 1; grid-row: 2; align-self: start; min-width: 0; padding-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted);
-  font-size: clamp(12px, 1.72vh, 16px); line-height: 1.05; font-weight: 700;
+  display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
+.moment-date { font-size: clamp(10px, 1.30vh, 13px); font-weight: 780; }
+.moment-time { font-size: clamp(11px, 1.52vh, 15px); font-weight: 730; }
 .badges {
   grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
   gap: 3px; min-width: 0;
@@ -2085,7 +2213,21 @@ html[data-theme="dark"] .switch input:checked + .switch-track { background: rgba
 }
 html[data-theme="dark"] .location-button { color: #ddfbff; background: rgba(85,208,220,.10); }
 .location-button:hover { filter: brightness(.98); border-color: rgba(23,143,156,.58); }
-.sheet-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.48; }
+.sheet-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.52; }
+.share-preview { margin: 2px 0 0; display: grid; gap: 9px; }
+.share-preview figcaption { display: grid; gap: 3px; line-height: 1.32; }
+.share-preview figcaption strong { color: var(--text); font-size: 16px; font-weight: 900; }
+.share-preview figcaption span { color: var(--muted); font-size: 13px; font-weight: 620; }
+.share-preview-frame {
+  position: relative; width: 100%; aspect-ratio: 1200 / 630; overflow: hidden; border: 1px solid var(--line-strong);
+  border-radius: 16px; background: var(--surface-muted); box-shadow: 0 10px 28px rgba(40, 48, 78, .10);
+}
+.share-preview-frame::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.32);
+}
+.share-preview-frame img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.share-preview-frame img[aria-busy="true"] { opacity: .55; }
 .sheet-actions {
   display: grid; grid-template-columns: 1fr 1.55fr; gap: 11px; padding: clamp(14px, 3vw, 23px);
   border-top: 1px solid var(--line); background: var(--surface-muted);
@@ -2439,11 +2581,12 @@ html[data-theme="dark"] .action-button.primary {
   .live-dot { display: none; }
   .metric-label { gap: 6px; padding-inline: 7px; }
   .metric-icon { width: clamp(22px, 3.25vh, 29px); font-size: clamp(12px, 1.9vh, 16px); }
-  .metric-label h2 { font-size: clamp(13px, 1.90vh, 16px); line-height: .98; }
+  .metric-label h2 { font-size: clamp(13px, 1.90vh, 16px); line-height: 1.12; }
   .timeline { padding-left: 0; padding-right: 20px; }
   .moment { flex-basis: calc(100vw - var(--label-width) - (2 * var(--pad)) - 3px); min-width: 0; max-width: 360px; padding-inline: 8px; column-gap: 5px; }
-  .moment-title { font-size: clamp(14.5px, 2.05vh, 17px); }
-  .moment-time { font-size: clamp(12px, 1.72vh, 14.5px); }
+  .moment-title { font-size: clamp(14px, 1.95vh, 16.5px); }
+  .moment-date { font-size: clamp(9.5px, 1.22vh, 11.5px); }
+  .moment-time { font-size: clamp(10.5px, 1.42vh, 13.5px); }
   .badge { max-width: 82px; padding-inline: 5px; }
   .fab { width: 52px; right: 9px; bottom: max(9px, env(safe-area-inset-bottom)); }
   .fab::after { display: none; }
@@ -2456,10 +2599,11 @@ html[data-theme="dark"] .action-button.primary {
   .previous-control, .header-actions .header-control { width: 38px; height: 38px; min-width: 38px; min-height: 38px; }
   .metric-label { padding-inline: 5px; gap: 5px; }
   .metric-icon { width: 20px; }
-  .metric-label h2 { font-size: 12.8px; line-height: .96; }
+  .metric-label h2 { font-size: 12.8px; line-height: 1.10; }
   .moment { padding-inline: 7px; }
-  .moment-title { font-size: 14px; }
-  .moment-time { font-size: 12.2px; }
+  .moment-title { font-size: 13.4px; }
+  .moment-date { font-size: 9px; }
+  .moment-time { font-size: 10.4px; }
   .badge { font-size: 7px; padding: 2px 4px; max-width: 72px; }
   .fab { width: 47px; }
 }
@@ -2471,11 +2615,12 @@ html[data-theme="dark"] .action-button.primary {
   .live-dot { display: none; }
   .metric-label { padding-inline: 6px; gap: 5px; }
   .metric-icon { width: 19px; font-size: 10px; }
-  .metric-label h2 { font-size: clamp(12px, 2.25vh, 13px); line-height: .96; }
+  .metric-label h2 { font-size: clamp(12px, 2.25vh, 13px); line-height: 1.10; }
   .timeline { padding-block: 2px; }
   .moment { padding-inline: 7px; column-gap: 5px; }
-  .moment-title { font-size: clamp(13.5px, 2.55vh, 14.5px); }
-  .moment-time { font-size: clamp(11.5px, 2.15vh, 12.5px); }
+  .moment-title { font-size: clamp(12.5px, 2.25vh, 14px); }
+  .moment-date { font-size: clamp(8.5px, 1.45vh, 10px); }
+  .moment-time { font-size: clamp(9.5px, 1.75vh, 11.5px); }
   .badge { font-size: clamp(7px, 1.45vh, 8px); padding: 2px 4px; max-width: 72px; }
   .fab { width: 44px; }
 }
@@ -2484,13 +2629,27 @@ html[data-theme="dark"] .action-button.primary {
   :root { --label-width: clamp(122px, 19vw, 198px); --header-height: 40px; }
   .day-title { font-size: clamp(12px, 2.1vw, 20px); }
   .previous-control, .header-actions .header-control { width: 30px; height: 30px; min-width: 30px; min-height: 30px; font-size: 23px; }
-  .moment { flex-basis: clamp(270px, 39vw, 420px); grid-template-rows: 1fr; grid-template-columns: minmax(0,1.2fr) minmax(0,.95fr) auto; padding-inline: 7px; column-gap: 6px; }
+  .moment { flex-basis: clamp(300px, 43vw, 455px); grid-template-rows: 1fr; grid-template-columns: minmax(0,.9fr) minmax(0,1.35fr) auto; padding: 1px 7px; column-gap: 6px; }
   .metric-label h2 { font-size: 10.5px; }
-  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: 0; font-size: 11px; }
-  .moment-time { grid-column: 2; grid-row: 1; align-self: center; padding: 0; text-align: right; font-size: 9.5px; }
+  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: .05em 0; font-size: 10.5px; line-height: 1.12; }
+  .moment-meta { grid-column: 2; grid-row: 1; align-self: center; display: flex; flex-direction: column; min-width: 0; text-align: right; line-height: 1.03; }
+  .moment-date { font-size: 7.5px; }
+  .moment-time { font-size: 8.5px; }
   .badges { grid-column: 3; grid-row: 1; margin-left: 2px; gap: 1px; }
   .badge { font-size: 6.5px; padding: 1px 4px; }
   .fab { width: 36px; right: 6px; bottom: 6px; }
+}
+
+html:lang(hi) .day-title, html:lang(mr) .day-title, html:lang(ne) .day-title, html:lang(sa) .day-title,
+html:lang(gu) .day-title, html:lang(bn) .day-title, html:lang(ta) .day-title, html:lang(te) .day-title,
+html:lang(kn) .day-title, html:lang(ml) .day-title, html:lang(pa) .day-title, html:lang(or) .day-title,
+html:lang(hi) .metric-label h2, html:lang(mr) .metric-label h2, html:lang(ne) .metric-label h2, html:lang(sa) .metric-label h2,
+html:lang(gu) .metric-label h2, html:lang(bn) .metric-label h2, html:lang(ta) .metric-label h2, html:lang(te) .metric-label h2,
+html:lang(kn) .metric-label h2, html:lang(ml) .metric-label h2, html:lang(pa) .metric-label h2, html:lang(or) .metric-label h2,
+html:lang(hi) .moment-title, html:lang(mr) .moment-title, html:lang(ne) .moment-title, html:lang(sa) .moment-title,
+html:lang(gu) .moment-title, html:lang(bn) .moment-title, html:lang(ta) .moment-title, html:lang(te) .moment-title,
+html:lang(kn) .moment-title, html:lang(ml) .moment-title, html:lang(pa) .moment-title, html:lang(or) .moment-title {
+  line-height: 1.24; padding-top: .12em; padding-bottom: .04em;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2566,6 +2725,7 @@ JS = r"""
   const loadingMask = $('#loadingMask');
   const liveIndicator = $('#liveIndicator');
   const ldJsonNode = $('#structuredData');
+  const ogPreviewImage = $('#ogPreviewImage');
   const themeInputs = $$('input[name="theme"]');
 
   const cssEscape = window.CSS && typeof window.CSS.escape === 'function'
@@ -2628,11 +2788,16 @@ JS = r"""
     ].filter(Boolean).join(' ');
     const currentAttr = item.current ? ' aria-current="true"' : '';
     const datetimeAttr = item.start ? ` datetime="${escapeHtml(item.start)}"` : '';
-    const aria = `${item.title}. ${item.time}. ${item.quality === 'auspicious' ? state.ui.good : item.quality === 'inauspicious' ? state.ui.avoid : ''}`;
+    const dateText = item.date || '';
+    const clockText = item.clock || item.time || '';
+    const aria = `${item.title}. ${dateText}. ${clockText}. ${item.quality === 'auspicious' ? state.ui.good : item.quality === 'inauspicious' ? state.ui.avoid : ''}`;
     return `
       <article class="${classes}" role="listitem"${currentAttr} aria-label="${escapeHtml(aria)}">
         <strong class="moment-title" itemprop="value">${escapeHtml(item.title)}</strong>
-        <time class="moment-time"${datetimeAttr}>${escapeHtml(item.time)}</time>
+        <span class="moment-meta">
+          <span class="moment-date">${escapeHtml(dateText)}</span>
+          <time class="moment-time"${datetimeAttr}>${escapeHtml(clockText)}</time>
+        </span>
         <span class="badges">${badges.join('')}</span>
       </article>`;
   }
@@ -2766,6 +2931,35 @@ JS = r"""
     liveIndicator.textContent = state.ui.live;
   }
 
+  function previewImageUrl() {
+    const language = languageInput?.value || settings.language || 'en';
+    const selectedDate = dateInput?.value || settings.date;
+    const parts = getZonedParts(settings.timezone);
+    const liveTime = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+    const snapshot = `${selectedDate.replaceAll('-', '')}${liveTime.replace(':', '')}`;
+    const params = new URLSearchParams({
+      place: settings.place, lat: String(settings.lat), lon: String(settings.lon), tz: settings.timezone,
+      date: selectedDate, time: liveTime, lang: language, v: state.app?.version || '1'
+    });
+    if (settings.country) params.set('country', settings.country);
+    return `/og/${encodeURIComponent(language)}/${snapshot}.png?${params.toString()}`;
+  }
+
+  function updateOgPreview(url = '') {
+    if (!ogPreviewImage) return;
+    const nextUrl = url || previewImageUrl();
+    if (ogPreviewImage.getAttribute('src') !== nextUrl) {
+      ogPreviewImage.setAttribute('aria-busy', 'true');
+      ogPreviewImage.src = nextUrl;
+    }
+    ogPreviewImage.alt = state.seo?.image_alt || state.ui.share_image_alt || state.ui.panchang;
+  }
+
+  if (ogPreviewImage) {
+    ogPreviewImage.addEventListener('load', () => ogPreviewImage.removeAttribute('aria-busy'));
+    ogPreviewImage.addEventListener('error', () => ogPreviewImage.removeAttribute('aria-busy'));
+  }
+
   function renderSeo() {
     if (!state.seo) return;
     document.title = state.seo.title;
@@ -2793,14 +2987,15 @@ JS = r"""
     if (ogImage) ogImage.content = state.seo.og_image;
     if (ogImageUrl) ogImageUrl.content = state.seo.og_image;
     if (ogSecureImage) ogSecureImage.content = state.seo.og_image;
-    if (ogImageAlt) ogImageAlt.content = state.seo.title;
+    if (ogImageAlt) ogImageAlt.content = state.seo.image_alt || state.seo.title;
     if (imageSrc) imageSrc.href = state.seo.og_image;
     if (itempropImage) itempropImage.content = state.seo.og_image;
     if (twitterTitle) twitterTitle.content = state.seo.title;
     if (twitterDescription) twitterDescription.content = state.seo.description;
     if (twitterImage) twitterImage.content = state.seo.og_image;
     if (twitterImageSrc) twitterImageSrc.content = state.seo.og_image;
-    if (twitterImageAlt) twitterImageAlt.content = state.seo.title;
+    if (twitterImageAlt) twitterImageAlt.content = state.seo.image_alt || state.seo.title;
+    updateOgPreview(state.seo.og_image);
     Object.entries(state.seo.alternates || {}).forEach(([code, href]) => {
       let link = $(`link[rel="alternate"][hreflang="${cssEscape(code)}"]`);
       if (!link) {
@@ -2987,6 +3182,7 @@ JS = r"""
     toggleLiveFields();
     placeResults.innerHTML = '';
     selectedPlace = true;
+    updateOgPreview();
   }
 
   function toggleLiveFields() {
@@ -3003,7 +3199,8 @@ JS = r"""
   editButton.addEventListener('click', openDialog);
   closeButton.addEventListener('click', closeDialog);
   cancelButton.addEventListener('click', closeDialog);
-  languageInput.addEventListener('change', () => { settings.language = languageInput.value; });
+  languageInput.addEventListener('change', () => { settings.language = languageInput.value; updateOgPreview(); });
+  dateInput.addEventListener('change', updateOgPreview);
   dialog.addEventListener('click', event => {
     if (event.target === dialog) closeDialog();
   });
@@ -3052,6 +3249,7 @@ JS = r"""
     placeInput.value = place.display_name || place.name;
     selectedPlace = true;
     placeResults.innerHTML = '';
+    updateOgPreview();
   }
 
   placeInput.addEventListener('focus', () => {
@@ -3141,6 +3339,7 @@ JS = r"""
       placeInput.value = settings.place;
       liveInput.checked = true;
       toggleLiveFields();
+      updateOgPreview();
       if (!auto) showToast(state.ui.location_ready);
       if (fetchImmediately) await fetchPanchang(0, 'replace');
       return true;
@@ -5190,6 +5389,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="{{ app_name }}">
   <meta property="og:locale" content="{{ og_locale }}">
+  {% for locale in og_locale_alternates %}<meta property="og:locale:alternate" content="{{ locale }}">
+  {% endfor %}
   <meta property="og:title" content="{{ seo.title }}">
   <meta property="og:description" content="{{ seo.description }}">
   <meta property="og:url" content="{{ seo.canonical }}">
@@ -5200,13 +5401,13 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="{{ seo.title }} — current Panchang timings">
+  <meta property="og:image:alt" content="{{ seo.image_alt }}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ seo.title }}">
   <meta name="twitter:description" content="{{ seo.description }}">
   <meta name="twitter:image" content="{{ seo.og_image }}">
   <meta name="twitter:image:src" content="{{ seo.og_image }}">
-  <meta name="twitter:image:alt" content="{{ seo.title }} — current Panchang timings">
+  <meta name="twitter:image:alt" content="{{ seo.image_alt }}">
   <meta itemprop="image" content="{{ seo.og_image }}">
 
   <style nonce="{{ nonce }}">
@@ -5250,9 +5451,12 @@ HTML_TEMPLATE = r"""<!doctype html>
           <div class="timeline-wrap">
             <div class="timeline" tabindex="0" role="list" aria-label="{{ section.label }} — {{ data.ui.timeline_hint }}">
               {% for item in section["items"] %}
-              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.time }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
+              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.date }}. {{ item.clock }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
                 <strong class="moment-title" itemprop="value">{{ item.title }}</strong>
-                <time class="moment-time"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.time }}</time>
+                <span class="moment-meta">
+                  <span class="moment-date">{{ item.date }}</span>
+                  <time class="moment-time"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.clock }}</time>
+                </span>
                 <span class="badges">
                   {% if item.quality == 'auspicious' %}<span class="badge good">{{ data.ui.good }}</span>{% endif %}
                   {% if item.quality == 'inauspicious' %}<span class="badge bad">{{ data.ui.avoid }}</span>{% endif %}
@@ -5349,6 +5553,15 @@ HTML_TEMPLATE = r"""<!doctype html>
         <button class="location-button" id="locationButton" type="button" data-i18n="use_location">{{ data.ui.use_location }}</button>
         <p class="sheet-note">{{ data.ui.calculation_note }}</p>
         <p class="sheet-note">{{ data.ui.geocode_attribution }}</p>
+        <figure class="share-preview">
+          <figcaption>
+            <strong data-i18n="share_preview">{{ data.ui.share_preview }}</strong>
+            <span data-i18n="share_preview_help">{{ data.ui.share_preview_help }}</span>
+          </figcaption>
+          <div class="share-preview-frame">
+            <img id="ogPreviewImage" src="{{ seo.og_image }}" alt="{{ seo.image_alt }}" width="1200" height="630" loading="eager" decoding="async">
+          </div>
+        </figure>
       </div>
       <div class="sheet-actions">
         <button class="action-button secondary" id="cancelButton" type="button" data-i18n="cancel">{{ data.ui.cancel }}</button>
@@ -5414,6 +5627,10 @@ def page_response(path_lang: str | None = None, place_slug: str | None = None, d
         root=site_root(),
         api_href=api_url(context),
         og_locale={"en": "en_IN", "ne": "ne_NP"}.get(context["lang"], f"{context['lang']}_IN"),
+        og_locale_alternates=[
+            {"en": "en_IN", "ne": "ne_NP"}.get(code, f"{code}_IN")
+            for code in LANGUAGES if code != context["lang"]
+        ],
         css=CSS,
         js=JS,
         initial_json=safe_script_json(data),
@@ -5818,7 +6035,6 @@ def sitemap_xml() -> Response:
         '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
         '  <sitemap>',
         f'    <loc>{html.escape(root + "/sitemap-static.xml", quote=True)}</loc>',
-        f'    <lastmod>{today}</lastmod>',
         '  </sitemap>',
     ]
     for lang in LANGUAGES:
@@ -5832,29 +6048,23 @@ def sitemap_xml() -> Response:
     response = Response("\n".join(entries), mimetype="application/xml")
     response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
-    response.headers["X-Robots-Tag"] = "noindex, follow"
     return response
 
 
 @app.get("/sitemap-static.xml")
 def sitemap_static_xml() -> Response:
     root = site_root()
-    today = datetime.now(IST).date().isoformat()
     entries = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
         '  <url>',
         f'    <loc>{html.escape(root + "/", quote=True)}</loc>',
-        f'    <lastmod>{today}</lastmod>',
-        '    <changefreq>hourly</changefreq>',
-        '    <priority>1.0</priority>',
         '  </url>',
         '</urlset>',
     ]
     response = Response("\n".join(entries), mimetype="application/xml")
     response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
-    response.headers["X-Robots-Tag"] = "noindex, follow"
     return response
 
 
@@ -5864,7 +6074,6 @@ def sitemap_language_xml(lang: str) -> Response:
     if lang not in LANGUAGES:
         return plain_not_found()
     root = site_root()
-    last_modified = datetime.now(UTC).date()
     entries: list[str] = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
@@ -5876,8 +6085,6 @@ def sitemap_language_xml(lang: str) -> Response:
         place_today = datetime.now(place_tz).date()
         dates = [place_today - timedelta(days=1)] + [place_today + timedelta(days=offset) for offset in range(0, 31)]
         for day in dates:
-            priority = "0.9" if day == place_today else "0.7"
-            changefreq = "hourly" if day == place_today else "daily"
             loc = f"{root}/{lang}/panchang/{slug}/{day.isoformat()}"
             entries.extend([
                 "  <url>",
@@ -5891,16 +6098,12 @@ def sitemap_language_xml(lang: str) -> Response:
             english_url = f"{root}/en/panchang/{slug}/{day.isoformat()}"
             entries.extend([
                 f'    <xhtml:link rel="alternate" hreflang="x-default" href="{html.escape(english_url, quote=True)}" />',
-                f"    <lastmod>{last_modified.isoformat()}</lastmod>",
-                f"    <changefreq>{changefreq}</changefreq>",
-                f"    <priority>{priority}</priority>",
                 "  </url>",
             ])
     entries.append("</urlset>")
     response = Response("\n".join(entries), mimetype="application/xml")
     response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
-    response.headers["X-Robots-Tag"] = "noindex, follow"
     return response
 
 
@@ -5986,20 +6189,75 @@ _SOCIAL_SCRIPT_NAMES = {
     "gu": "Gujarati", "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "kn": "Kannada",
     "ml": "Malayalam", "pa": "Gurmukhi", "or": "Oriya",
 }
+_SOCIAL_FONT_FAMILIES = {
+    "Devanagari": "NotoSansDevanagari", "Gujarati": "NotoSansGujarati", "Bengali": "NotoSansBengali",
+    "Tamil": "NotoSansTamil", "Telugu": "NotoSansTelugu", "Kannada": "NotoSansKannada",
+    "Malayalam": "NotoSansMalayalam", "Gurmukhi": "NotoSansGurmukhi", "Oriya": "NotoSansOriya",
+}
+_SOCIAL_SCRIPT_RANGES = {
+    "Devanagari": ((0x0900, 0x097F), (0x1CD0, 0x1CFF), (0xA8E0, 0xA8FF)),
+    "Bengali": ((0x0980, 0x09FF),), "Gurmukhi": ((0x0A00, 0x0A7F),),
+    "Gujarati": ((0x0A80, 0x0AFF),), "Oriya": ((0x0B00, 0x0B7F),),
+    "Tamil": ((0x0B80, 0x0BFF),), "Telugu": ((0x0C00, 0x0C7F),),
+    "Kannada": ((0x0C80, 0x0CFF),), "Malayalam": ((0x0D00, 0x0D7F),),
+}
 
 
-@lru_cache(maxsize=384)
+def _font_layout() -> Any:
+    return getattr(getattr(ImageFont, "Layout", object()), "RAQM", None) if ImageFont is not None else None
+
+
+@lru_cache(maxsize=32)
+def _download_social_font(script: str, bold: bool) -> str:
+    """Download an OFL Noto TTF to ephemeral storage when Render lacks Indic fonts."""
+    if os.getenv("PANCHANG_FONT_DOWNLOAD", "1").strip().lower() in {"0", "false", "no"}:
+        return ""
+    family = _SOCIAL_FONT_FAMILIES.get(script)
+    if not family:
+        return ""
+    weight = "Bold" if bold else "Regular"
+    cache_dir = os.getenv("PANCHANG_FONT_CACHE_DIR", "/tmp/panchang-fonts")
+    target = os.path.join(cache_dir, f"{family}-{weight}.ttf")
+    try:
+        if os.path.getsize(target) > 10_000:
+            return target
+    except OSError:
+        pass
+    url = (
+        "https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/"
+        f"{family}/{family}-{weight}.ttf"
+    )
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        response = requests.get(
+            url,
+            headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/octet-stream"},
+            timeout=(2.5, 6),
+        )
+        response.raise_for_status()
+        payload = response.content
+        if len(payload) < 10_000 or payload[:4] not in {b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf"}:
+            return ""
+        temporary = f"{target}.{os.getpid()}.tmp"
+        with open(temporary, "wb") as font_file:
+            font_file.write(payload)
+        os.replace(temporary, target)
+        return target
+    except (OSError, requests.RequestException):
+        app.logger.warning("Could not prepare social font %s", family, exc_info=app.debug)
+        return ""
+
+
+@lru_cache(maxsize=512)
 def social_font(lang: str, size: int, bold: bool = False) -> Any:
-    """Load a local font with shaping support; no remote font request is needed."""
+    """Load a shaped local font, with a cached Noto fallback for Indic scripts."""
     if ImageFont is None:
         return None
     candidates: list[str] = []
     script = _SOCIAL_SCRIPT_NAMES.get(lang)
+    weight = "Bold" if bold else "Regular"
     if script:
-        weight = "Bold" if bold else "Regular"
-        # Lohit faces include Latin, digits and punctuation as well as the
-        # target Indic script, which prevents missing-glyph boxes in mixed
-        # strings such as "11 Sept · Friday" and "1:26 AM".
+        family = _SOCIAL_FONT_FAMILIES.get(script, f"NotoSans{script}")
         lohit_paths = {
             "Devanagari": "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
             "Gujarati": "/usr/share/fonts/truetype/lohit-gujarati/Lohit-Gujarati.ttf",
@@ -6009,71 +6267,142 @@ def social_font(lang: str, size: int, bold: bool = False) -> Any:
             "Kannada": "/usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf",
             "Malayalam": "/usr/share/fonts/truetype/lohit-malayalam/Lohit-Malayalam.ttf",
             "Oriya": "/usr/share/fonts/truetype/lohit-oriya/Lohit-Odia.ttf",
-            "Gurmukhi": "/usr/share/fonts/opentype/freefont/FreeSansBold.otf" if bold else "/usr/share/fonts/opentype/freefont/FreeSans.otf",
         }
         if script in lohit_paths:
             candidates.append(lohit_paths[script])
         candidates.extend([
-            f"/usr/share/fonts/truetype/noto/NotoSans{script}-{weight}.ttf",
-            "/usr/share/fonts/opentype/freefont/FreeSansBold.otf" if bold else "/usr/share/fonts/opentype/freefont/FreeSans.otf",
+            f"/usr/share/fonts/truetype/noto/{family}-{weight}.ttf",
+            f"/usr/share/fonts/opentype/noto/{family}-{weight}.ttf",
+            f"/usr/share/fonts/truetype/noto/{family}UI-{weight}.ttf",
         ])
+        candidates.extend(sorted(glob.glob(f"/usr/share/fonts/**/*{family}*{weight}*.ttf", recursive=True)))
     else:
         candidates.extend([
             "/usr/share/fonts/opentype/inter/InterDisplay-ExtraBold.otf" if bold else "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
-            "/usr/share/fonts/opentype/inter/Inter-Bold.otf" if bold else "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
+            "/usr/share/fonts/opentype/inter/Inter-Bold.otf" if bold else "/usr/share/opentype/inter/Inter-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         ])
     candidates.extend([
-        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/opentype/freefont/FreeSansBold.otf" if bold else "/usr/share/opentype/freefont/FreeSans.otf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ])
-    layout = getattr(getattr(ImageFont, "Layout", object()), "RAQM", None)
-    for font_path in candidates:
-        if not os.path.exists(font_path):
-            continue
+    layout = _font_layout()
+
+    def load_candidate(font_path: str) -> Any | None:
+        if not font_path or not os.path.exists(font_path):
+            return None
         try:
             kwargs = {"layout_engine": layout} if layout is not None else {}
             return ImageFont.truetype(font_path, size=size, **kwargs)
         except Exception:
-            continue
+            if layout is not None:
+                try:
+                    return ImageFont.truetype(font_path, size=size)
+                except Exception:
+                    pass
+            return None
+
+    # Prefer installed fonts so the first social-crawler request remains fast.
+    # Download the matching OFL Noto face only when this environment genuinely
+    # lacks the requested Indic script.
+    for font_path in dict.fromkeys(candidates):
+        loaded = load_candidate(font_path)
+        if loaded is not None:
+            return loaded
+    if script:
+        loaded = load_candidate(_download_social_font(script, bold))
+        if loaded is not None:
+            return loaded
     try:
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
 
 
-def social_text_width(draw: Any, text: str, font: Any) -> float:
-    try:
-        return float(draw.textlength(text, font=font))
-    except Exception:
-        box = draw.textbbox((0, 0), text, font=font)
-        return float(box[2] - box[0])
+def _is_script_character(character: str, lang: str) -> bool:
+    script = _SOCIAL_SCRIPT_NAMES.get(lang)
+    codepoint = ord(character)
+    return any(start <= codepoint <= end for start, end in _SOCIAL_SCRIPT_RANGES.get(script, ()))
 
 
-def fit_social_font(
-    draw: Any,
-    text: str,
-    lang: str,
-    max_width: float,
-    max_size: int,
-    min_size: int,
-    bold: bool = False,
-) -> Any:
-    """Return the largest local font that keeps a single line inside max_width."""
+def social_runs(text: str, lang: str) -> list[tuple[str, bool]]:
+    """Split mixed native-script/Latin strings so each run gets a suitable font."""
+    if lang == "en" or lang not in _SOCIAL_SCRIPT_NAMES:
+        return [(text, False)]
+    runs: list[tuple[str, bool]] = []
+    buffer = ""
+    active: bool | None = None
+    for character in text:
+        if character in {"\u200c", "\u200d"} or unicodedata.combining(character):
+            use_script = active if active is not None else True
+        elif character.isspace():
+            use_script = active if active is not None else False
+        else:
+            use_script = _is_script_character(character, lang)
+        if active is None or use_script == active:
+            buffer += character
+            active = use_script
+        else:
+            runs.append((buffer, bool(active)))
+            buffer = character
+            active = use_script
+    if buffer:
+        runs.append((buffer, bool(active)))
+    return runs
+
+
+def social_run_width(draw: Any, text: str, lang: str, size: int, bold: bool = False) -> float:
+    width = 0.0
+    for run, use_script in social_runs(text, lang):
+        font = social_font(lang if use_script else "en", size, bold)
+        try:
+            width += float(draw.textlength(run, font=font))
+        except Exception:
+            box = draw.textbbox((0, 0), run, font=font)
+            width += float(box[2] - box[0])
+    return width
+
+
+def fit_social_size(draw: Any, text: str, lang: str, max_width: float, max_size: int, min_size: int, bold: bool = False) -> int:
     for size in range(max_size, min_size - 1, -1):
-        font = social_font(lang, size, bold)
-        if social_text_width(draw, text, font) <= max_width:
-            return font
-    return social_font(lang, min_size, bold)
+        if social_run_width(draw, text, lang, size, bold) <= max_width:
+            return size
+    return min_size
 
 
-def truncate_social_text(draw: Any, text: str, font: Any, max_width: float) -> str:
-    if social_text_width(draw, text, font) <= max_width:
+def truncate_social_mixed(draw: Any, text: str, lang: str, size: int, max_width: float, bold: bool = False) -> str:
+    if social_run_width(draw, text, lang, size, bold) <= max_width:
         return text
     ellipsis = "…"
-    chars = list(text)
-    while chars and social_text_width(draw, "".join(chars).rstrip() + ellipsis, font) > max_width:
-        chars.pop()
-    return ("".join(chars).rstrip() + ellipsis) if chars else ellipsis
+    characters = list(text)
+    while characters and social_run_width(draw, "".join(characters).rstrip() + ellipsis, lang, size, bold) > max_width:
+        characters.pop()
+    return ("".join(characters).rstrip() + ellipsis) if characters else ellipsis
+
+
+def draw_social_mixed(
+    draw: Any,
+    position: tuple[float, float],
+    text: str,
+    lang: str,
+    size: int,
+    bold: bool,
+    fill: tuple[int, int, int, int],
+    max_width: float | None = None,
+) -> str:
+    rendered = truncate_social_mixed(draw, text, lang, size, max_width, bold) if max_width else text
+    x, y = position
+    for run, use_script in social_runs(rendered, lang):
+        font = social_font(lang if use_script else "en", size, bold)
+        try:
+            box = draw.textbbox((0, 0), run, font=font)
+            draw.text((x - box[0], y - box[1]), run, font=font, fill=fill)
+            advance = float(draw.textlength(run, font=font))
+        except Exception:
+            draw.text((x, y), run, font=font, fill=fill)
+            advance = float(draw.textbbox((0, 0), run, font=font)[2])
+        x += advance
+    return rendered
 
 
 def _mix_rgb(first: tuple[int, int, int], second: tuple[int, int, int], amount: float) -> tuple[int, int, int, int]:
@@ -6158,22 +6487,20 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
 
     lang = context["lang"]
     title_text = f"{tr(lang, 'panchang')}  •  {context['place']}"
-    title_font = fit_social_font(draw, title_text, lang, 820, 47, 29, True)
-    title_text = truncate_social_text(draw, title_text, title_font, 820)
-    draw.text((153, 40), title_text, font=title_font, fill=paper)
+    title_size = fit_social_size(draw, title_text, lang, 820, 47, 29, True)
+    draw_social_mixed(draw, (153, 40), title_text, lang, title_size, True, paper, 820)
 
     subtitle = f"{format_date_label(context['date'], lang)}  •  {format_clock(context['at'])}  •  {context['timezone']}"
-    subtitle_font = fit_social_font(draw, subtitle, lang, 865, 25, 17, True)
-    subtitle = truncate_social_text(draw, subtitle, subtitle_font, 865)
-    draw.text((154, 98), subtitle, font=subtitle_font, fill=(225, 232, 246, 255))
+    subtitle_size = fit_social_size(draw, subtitle, lang, 865, 25, 17, True)
+    draw_social_mixed(draw, (154, 98), subtitle, lang, subtitle_size, True, (225, 232, 246, 255), 865)
 
     live_text = tr(lang, "live")
-    live_font = social_font(lang, 15, True)
-    live_width = social_text_width(draw, live_text, live_font)
+    live_size = 15
+    live_width = social_run_width(draw, live_text, lang, live_size, True)
     live_left = width - margin - live_width - 54
     draw.rounded_rectangle((live_left, 52, width - margin - 16, 88), radius=18, fill=(255, 255, 255, 238))
     draw.ellipse((live_left + 13, 66, live_left + 21, 74), fill=teal)
-    draw.text((live_left + 27, 60), live_text, font=live_font, fill=accent_deep)
+    draw_social_mixed(draw, (live_left + 27, 60), live_text, lang, live_size, True, accent_deep)
 
     card_gap_x = 12
     card_gap_y = 10
@@ -6235,37 +6562,37 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
 
         label_left = x1 + (30 if not status_text else 20)
         label = str(section.get("label", ""))
-        label_font = fit_social_font(draw, label, lang, 225, 16, 11, True)
-        label = truncate_social_text(draw, label, label_font, 225)
-        draw.text((label_left, y1 + 12), label, font=label_font, fill=muted)
+        label_size = fit_social_size(draw, label, lang, 225, 16, 11, True)
+        draw_social_mixed(draw, (label_left, y1 + 12), label, lang, label_size, True, muted, 225)
 
         if status_text:
-            badge_font = fit_social_font(draw, status_text, lang, 118, 12, 9, True)
-            status_text = truncate_social_text(draw, status_text, badge_font, 118)
-            badge_width = social_text_width(draw, status_text, badge_font) + 22
+            badge_size = fit_social_size(draw, status_text, lang, 118, 12, 9, True)
+            status_text = truncate_social_mixed(draw, status_text, lang, badge_size, 118, True)
+            badge_width = social_run_width(draw, status_text, lang, badge_size, True) + 22
             badge_left = x2 - badge_width - 13
             draw.rounded_rectangle((badge_left, y1 + 9, x2 - 13, y1 + 34), radius=13, fill=status_fill, outline=status_color, width=1)
-            draw.text((badge_left + 11, y1 + 14), status_text, font=badge_font, fill=status_color)
+            draw_social_mixed(draw, (badge_left + 11, y1 + 14), status_text, lang, badge_size, True, status_color, 118)
 
         value = str(item.get("title", "—") if item else "—")
-        value_font = fit_social_font(draw, value, lang, card_width - 40, 27, 18, True)
-        value = truncate_social_text(draw, value, value_font, card_width - 40)
-        draw.text((x1 + 20, y1 + 48), value, font=value_font, fill=ink)
+        value_size = fit_social_size(draw, value, lang, card_width - 40, 25, 17, True)
+        draw_social_mixed(draw, (x1 + 20, y1 + 44), value, lang, value_size, True, ink, card_width - 40)
 
-        timing = str(item.get("time", "") if item else "")
-        timing_font = fit_social_font(draw, timing, lang, card_width - 40, 16, 11, False)
-        timing = truncate_social_text(draw, timing, timing_font, card_width - 40)
-        draw.text((x1 + 20, y1 + 108), timing, font=timing_font, fill=muted)
+        card_date = str(item.get("date", "") if item else "")
+        date_size = fit_social_size(draw, card_date, lang, card_width - 40, 14, 10, True)
+        draw_social_mixed(draw, (x1 + 20, y1 + 88), card_date, lang, date_size, True, muted, card_width - 40)
+
+        clock = str(item.get("clock", item.get("time", "")) if item else "")
+        clock_size = fit_social_size(draw, clock, lang, card_width - 40, 15, 10, False)
+        draw_social_mixed(draw, (x1 + 20, y1 + 111), clock, lang, clock_size, False, muted, card_width - 40)
 
     footer_y = 598
     draw.line((margin + 7, footer_y - 10, width - margin - 7, footer_y - 10), fill=line, width=1)
     site_text = site_root().replace("https://", "").replace("http://", "").split("/")[0] or APP_NAME
-    site_font = social_font("en", 15, True)
-    draw.text((margin + 8, footer_y), site_text, font=site_font, fill=accent_deep)
-    footer_message = f"Live local Panchang • {TIMELINE_FUTURE_ITEMS}+ upcoming values"
-    footer_font = social_font("en", 15, True)
-    footer_width = social_text_width(draw, footer_message, footer_font)
-    draw.text((width - margin - 8 - footer_width, footer_y), footer_message, font=footer_font, fill=muted)
+    draw_social_mixed(draw, (margin + 8, footer_y), site_text, "en", 15, True, accent_deep)
+    footer_message = f"{tr(lang, 'live')} • {TIMELINE_FUTURE_ITEMS}+ {tr(lang, 'upcoming_values')}"
+    footer_size = fit_social_size(draw, footer_message, lang, 450, 15, 10, True)
+    footer_width = social_run_width(draw, footer_message, lang, footer_size, True)
+    draw_social_mixed(draw, (width - margin - 8 - footer_width, footer_y), footer_message, lang, footer_size, True, muted, 450)
 
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
@@ -6291,16 +6618,22 @@ def icon_512() -> Response:
 
 @app.get("/og.png")
 @app.get("/og/<snapshot>.png")
-def open_graph_image(snapshot: str | None = None) -> Response:
+@app.get("/og/<path_lang>/<snapshot>.png")
+def open_graph_image(snapshot: str | None = None, path_lang: str | None = None) -> Response:
+    if path_lang and path_lang not in LANGUAGES:
+        return plain_not_found()
     try:
-        # Only this renderer accepts the minute snapshot embedded in og:image.
-        # The website and public JSON API remain permanently live.
-        context = resolve_context(allow_snapshot_time=True)
+        # Only this renderer accepts the explicit minute in the query. Keeping
+        # the language in the route prevents cross-language social cache hits.
+        context = resolve_context(path_lang, allow_snapshot_time=True)
         context["social_live"] = True
         data = build_panchang(context)
         payload = render_social_image(context, data)
         response = Response(payload, mimetype="image/png")
         response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+        response.headers["Content-Language"] = context["lang"]
+        response.headers["Vary"] = "Accept-Language"
+        response.headers["Content-Disposition"] = f'inline; filename="panchang-{context["lang"]}-{snapshot or "live"}.png"'
         response.headers["Accept-Ranges"] = "bytes"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Access-Control-Allow-Origin"] = "*"
@@ -6312,7 +6645,8 @@ def open_graph_image(snapshot: str | None = None) -> Response:
     except Exception:
         app.logger.exception("Dynamic social image rendering failed")
         fallback = Response(base64.b64decode(OG_IMAGE_B64), mimetype="image/png")
-        fallback.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+        fallback.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
+        fallback.headers["Content-Language"] = path_lang if path_lang in LANGUAGES else "en"
         fallback.headers["Accept-Ranges"] = "bytes"
         fallback.headers["Access-Control-Allow-Origin"] = "*"
         fallback.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
