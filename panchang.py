@@ -52,7 +52,7 @@ app = Flask(__name__)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024)
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -137,7 +137,7 @@ EN_TEXT = {
     "swipe_hint": "Swipe or horizontally scroll the header for another day.",
     "timeline_hint": "Scroll left for earlier periods and right for upcoming periods.",
     "calculation_note": "Traditional calendrical calculation using Lahiri ayanamsa. Verify important ceremonies with a qualified practitioner.",
-    "geocode_attribution": "Place search data: GeoNames via Open-Meteo.",
+    "geocode_attribution": "Place names: GeoNames/Open-Meteo and OpenStreetMap/Nominatim.",
     "close": "Close",
     "searching": "Searching…",
     "not_available": "Not available",
@@ -147,6 +147,9 @@ EN_TEXT = {
     "refreshed": "Panchang refreshed.",
     "auto_refresh": "Automatically refreshes every minute",
     "location_fallback": "Location is unavailable, so Ujjain is being shown.",
+    "appearance": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
 }
 
 TEXT_OVERRIDES: dict[str, dict[str, str]] = {
@@ -280,6 +283,23 @@ REFRESH_TEXT: dict[str, dict[str, str]] = {
 }
 for _language_code, _refresh_values in REFRESH_TEXT.items():
     TEXT_OVERRIDES.setdefault(_language_code, {}).update(_refresh_values)
+
+THEME_TEXT: dict[str, dict[str, str]] = {
+    "hi": {"appearance": "रूप", "light": "उजला", "dark": "गहरा"},
+    "mr": {"appearance": "दृश्यरूप", "light": "उजळ", "dark": "गडद"},
+    "gu": {"appearance": "દેખાવ", "light": "ઉજળું", "dark": "ઘેરું"},
+    "bn": {"appearance": "রূপ", "light": "হালকা", "dark": "গাঢ়"},
+    "ta": {"appearance": "தோற்றம்", "light": "வெளிச்சம்", "dark": "இருள்"},
+    "te": {"appearance": "రూపం", "light": "లైట్", "dark": "డార్క్"},
+    "kn": {"appearance": "ರೂಪ", "light": "ಬೆಳಕು", "dark": "ಗಾಢ"},
+    "ml": {"appearance": "രൂപം", "light": "ലൈറ്റ്", "dark": "ഡാർക്ക്"},
+    "pa": {"appearance": "ਦਿੱਖ", "light": "ਹਲਕਾ", "dark": "ਗੂੜ੍ਹਾ"},
+    "or": {"appearance": "ଦେଖା", "light": "ଉଜ୍ଜ୍ୱଳ", "dark": "ଗାଢ଼"},
+    "ne": {"appearance": "रूप", "light": "उज्यालो", "dark": "गाढा"},
+    "sa": {"appearance": "रूपम्", "light": "प्रकाशम्", "dark": "अन्धकारः"},
+}
+for _language_code, _theme_values in THEME_TEXT.items():
+    TEXT_OVERRIDES.setdefault(_language_code, {}).update(_theme_values)
 
 def ui_text(lang: str) -> dict[str, str]:
     result = dict(EN_TEXT)
@@ -537,7 +557,8 @@ def ordinal(day: int) -> str:
 
 def format_clock(value: datetime) -> str:
     hour = value.hour % 12 or 12
-    return f"{hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
+    # Keep the meridiem attached to the time when compact cards wrap on mobile.
+    return f"{hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
 
 
 def format_date_label(value: date, lang: str = "en", include_year: bool = True) -> str:
@@ -791,7 +812,9 @@ def interval_item(
         "current": bool(current),
         "quality": quality,
         "detail": detail,
-        "badge": tr(lang, "now") if current else "",
+        # The current card is indicated by its border/background; no text badge
+        # is rendered so long Panchang names retain the full card width.
+        "badge": "",
     }
 
 
@@ -899,6 +922,30 @@ def make_sun_timeline(event: str, at: datetime, latitude: float, longitude: floa
         weekday = EN_WEEKDAYS[day.weekday()]
         title = f"{day.day} {EN_MONTHS[day.month - 1]} · {weekday}"
         items.append(point_item(title, value, at, lang, offset == 0))
+    return items
+
+
+def make_sun_pair_timeline(at: datetime, latitude: float, longitude: float, tz_name: str, lang: str) -> list[dict[str, Any]]:
+    """Return one daily card containing both sunrise and sunset."""
+    items: list[dict[str, Any]] = []
+    for offset in range(-TIMELINE_PAST_ITEMS, TIMELINE_FUTURE_ITEMS + 1):
+        day = at.date() + timedelta(days=offset)
+        sunrise, sunset = sun_pair(day, latitude, longitude, tz_name)
+        weekday = EN_WEEKDAYS[day.weekday()]
+        title = f"{day.day} {EN_MONTHS[day.month - 1]} · {weekday}"
+        rise_text = format_clock(sunrise) if sunrise else "—"
+        set_text = format_clock(sunset) if sunset else "—"
+        unavailable = sunrise is None and sunset is None
+        items.append({
+            "title": title,
+            "time": tr(lang, "solar_unavailable") if unavailable else f"☀ {rise_text}  •  ◒ {set_text}",
+            "start": iso_minute(sunrise) if sunrise else "",
+            "end": iso_minute(sunset) if sunset else "",
+            "current": offset == 0,
+            "quality": "neutral",
+            "detail": "",
+            "badge": "",
+        })
     return items
 
 
@@ -1189,8 +1236,8 @@ def make_period_timeline(at: datetime, latitude: float, longitude: float, tz_nam
 # ---------------------------------------------------------------------------
 
 SECTION_ICONS = {
-    "sunrise": "☀", "sunset": "◒", "tithi": "◐", "nakshatra": "✦", "yoga": "∞",
-    "karana": "◇", "choghadiya": "◷", "hora": "☉", "period": "ॐ", "lagna": "↟",
+    "sun": "☀", "sunrise": "☀", "sunset": "◒", "tithi": "◐", "nakshatra": "✦", "yoga": "∞",
+    "karana": "◇", "choghadiya": "◷", "hora": "☉", "period": "ॐ", "lagna": "↟", "reserved": "",
 }
 
 
@@ -1209,9 +1256,10 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
     tz_name = context["timezone"]
     lang = context["lang"]
 
+    sunrise_items = make_sun_timeline("rise", at, lat, lon, tz_name, lang)
+    sunset_items = make_sun_timeline("set", at, lat, lon, tz_name, lang)
     sections = [
-        section_model("sunrise", tr(lang, "sunrise"), make_sun_timeline("rise", at, lat, lon, tz_name, lang)),
-        section_model("sunset", tr(lang, "sunset"), make_sun_timeline("set", at, lat, lon, tz_name, lang)),
+        section_model("sun", f"{tr(lang, 'sunrise')} / {tr(lang, 'sunset')}", make_sun_pair_timeline(at, lat, lon, tz_name, lang)),
         section_model("tithi", tr(lang, "tithi"), make_category_timeline("tithi", at, lat, lon, lang)),
         section_model("nakshatra", tr(lang, "nakshatra"), make_category_timeline("nakshatra", at, lat, lon, lang)),
         section_model("yoga", tr(lang, "yoga"), make_category_timeline("yoga", at, lat, lon, lang)),
@@ -1220,9 +1268,12 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         section_model("hora", tr(lang, "hora"), make_hora_timeline(at, lat, lon, tz_name, lang)),
         section_model("period", tr(lang, "period"), make_period_timeline(at, lat, lon, tz_name, lang)),
         section_model("lagna", tr(lang, "lagna"), make_category_timeline("lagna", at, lat, lon, lang)),
+        {"key": "reserved", "label": "", "icon": "", "items": [], "reserved": True},
     ]
 
-    summary = {section["key"]: current_or_focused(section["items"]) for section in sections}
+    summary = {section["key"]: current_or_focused(section["items"]) for section in sections if section.get("items")}
+    summary["sunrise"] = current_or_focused(sunrise_items)
+    summary["sunset"] = current_or_focused(sunset_items)
     headers = {
         "previous": format_header(at - timedelta(days=1), context["place"], lang),
         "current": format_header(at, context["place"], lang),
@@ -1484,36 +1535,68 @@ def safe_script_json(value: Any) -> str:
 
 CSS = r"""
 :root {
-  color-scheme: dark;
-  --bg-0: #04131c;
-  --bg-1: #082333;
-  --bg-2: #0e3042;
-  --surface: rgba(17, 43, 59, .94);
-  --surface-strong: rgba(20, 51, 70, .98);
-  --surface-soft: rgba(255, 255, 255, .065);
-  --line: rgba(201, 226, 238, .17);
-  --line-strong: rgba(201, 226, 238, .31);
-  --text: #fbfdff;
-  --muted: #c3d3dd;
-  --gold: #f4bd4f;
-  --cyan: #69ddea;
-  --mint: #62ddb4;
-  --rose: #ff8995;
-  --lavender: #b9b4ff;
-  --peach: #ffb39f;
-  --good: var(--mint);
-  --good-bg: rgba(73, 201, 158, .18);
-  --bad: var(--rose);
-  --bad-bg: rgba(240, 104, 121, .18);
-  --neutral: var(--lavender);
-  --shadow: 0 18px 58px rgba(0, 0, 0, .34);
-  --radius: clamp(11px, 1.8vmin, 20px);
-  --gap: clamp(2px, .48vh, 7px);
+  color-scheme: light;
+  --bg-0: #fffdfa;
+  --bg-1: #f7f8f5;
+  --bg-2: #eef6f3;
+  --surface: rgba(255, 255, 255, .92);
+  --surface-strong: #ffffff;
+  --surface-soft: rgba(255, 255, 255, .72);
+  --line: rgba(36, 44, 55, .10);
+  --line-strong: rgba(36, 44, 55, .20);
+  --text: #171922;
+  --muted: #5f6672;
+  --gold: #d99712;
+  --cyan: #218fa0;
+  --mint: #15977f;
+  --rose: #d54f74;
+  --lavender: #6a63d7;
+  --peach: #ef6b55;
+  --good: #13876f;
+  --good-bg: #dcf6eb;
+  --bad: #c84261;
+  --bad-bg: #ffe5eb;
+  --neutral: #6863c8;
+  --header-bg: linear-gradient(112deg, #d6f4ea 0%, #fff1c2 35%, #f9d9e7 69%, #d9f1f4 100%);
+  --header-control-bg: rgba(255, 255, 255, .78);
+  --shadow: 0 16px 42px rgba(46, 51, 62, .12);
+  --shadow-soft: 0 5px 18px rgba(46, 51, 62, .075);
+  --radius: clamp(12px, 1.8vmin, 20px);
+  --gap: clamp(3px, .48vh, 7px);
   --pad: clamp(5px, .9vmin, 12px);
-  --header-height: clamp(54px, 8.4vh, 90px);
-  --label-width: clamp(108px, 25vw, 290px);
+  --header-height: clamp(58px, 8.4vh, 90px);
+  --label-width: clamp(112px, 25vw, 290px);
   --header-left-space: clamp(48px, 6.4vw, 68px);
-  --header-right-space: clamp(100px, 12vw, 136px);
+  --header-right-space: clamp(48px, 6.4vw, 68px);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-0: #101820;
+  --bg-1: #16242d;
+  --bg-2: #1c3039;
+  --surface: rgba(31, 46, 57, .95);
+  --surface-strong: #20313c;
+  --surface-soft: rgba(35, 52, 64, .90);
+  --line: rgba(226, 239, 244, .10);
+  --line-strong: rgba(226, 239, 244, .22);
+  --text: #f7fbfc;
+  --muted: #c1ced4;
+  --gold: #f3bd50;
+  --cyan: #74d5df;
+  --mint: #6ed8b8;
+  --rose: #ff8fa3;
+  --lavender: #b9b4ff;
+  --peach: #ff9f88;
+  --good: #70ddb9;
+  --good-bg: #173f39;
+  --bad: #ff8da0;
+  --bad-bg: #4a2b35;
+  --neutral: #b9b4ff;
+  --header-bg: linear-gradient(112deg, #27463f 0%, #4b4026 35%, #4b2e3d 69%, #203e47 100%);
+  --header-control-bg: rgba(13, 25, 33, .68);
+  --shadow: 0 18px 52px rgba(0, 0, 0, .33);
+  --shadow-soft: 0 7px 20px rgba(0, 0, 0, .22);
 }
 
 * { box-sizing: border-box; }
@@ -1523,31 +1606,34 @@ body {
   min-height: 100dvh;
   color: var(--text);
   background:
-    radial-gradient(75vmax 50vmax at 2% -16%, rgba(244, 189, 79, .17), transparent 56%),
-    radial-gradient(58vmax 46vmax at 103% 4%, rgba(105, 221, 234, .14), transparent 58%),
-    radial-gradient(52vmax 40vmax at 80% 112%, rgba(185, 180, 255, .10), transparent 62%),
-    linear-gradient(145deg, var(--bg-0), var(--bg-1) 52%, #071a27);
+    radial-gradient(68vmax 43vmax at 0% -13%, rgba(87, 204, 173, .18), transparent 58%),
+    radial-gradient(55vmax 42vmax at 102% 1%, rgba(241, 132, 170, .16), transparent 58%),
+    radial-gradient(50vmax 35vmax at 78% 112%, rgba(112, 166, 226, .12), transparent 62%),
+    linear-gradient(145deg, var(--bg-0), var(--bg-1) 55%, var(--bg-2));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
     "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Tamil", "Noto Sans Telugu", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(68vmax 43vmax at 0% -13%, rgba(87, 204, 173, .10), transparent 58%),
+    radial-gradient(55vmax 42vmax at 102% 1%, rgba(241, 132, 170, .09), transparent 58%),
+    radial-gradient(50vmax 35vmax at 78% 112%, rgba(112, 166, 226, .08), transparent 62%),
+    linear-gradient(145deg, var(--bg-0), var(--bg-1) 55%, var(--bg-2));
+}
 button, input, select { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 
-.ambient {
-  position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0;
-}
-.ambient::before, .ambient::after {
-  content: ""; position: absolute; border-radius: 50%; opacity: .78;
-}
+.ambient { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0; }
+.ambient::before, .ambient::after { content: ""; position: absolute; border-radius: 50%; opacity: .74; }
 .ambient::before {
-  width: 42vmax; height: 42vmax; left: -25vmax; top: 17%;
-  border: 1px solid rgba(244, 189, 79, .13); box-shadow: 0 0 95px rgba(244, 189, 79, .05) inset;
+  width: 38vmax; height: 38vmax; left: -24vmax; top: 18%;
+  border: 1px solid rgba(217, 151, 18, .14); box-shadow: 0 0 95px rgba(217, 151, 18, .045) inset;
 }
 .ambient::after {
-  width: 34vmax; height: 34vmax; right: -21vmax; top: 9%;
-  border: 1px solid rgba(105, 221, 234, .14); box-shadow: 0 0 90px rgba(105, 221, 234, .05) inset;
+  width: 32vmax; height: 32vmax; right: -20vmax; top: 8%;
+  border: 1px solid rgba(33, 143, 160, .13); box-shadow: 0 0 90px rgba(33, 143, 160, .045) inset;
 }
 
 .app-shell {
@@ -1557,17 +1643,17 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 .day-carousel {
-  min-width: 0; min-height: 0; overflow: hidden; border: 1px solid rgba(105, 221, 234, .30);
-  border-radius: var(--radius);
-  background: linear-gradient(112deg, rgba(244, 189, 79, .22), rgba(22, 49, 59, .95) 29%, rgba(9, 38, 54, .98) 63%, rgba(105, 221, 234, .16));
-  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.06); position: relative;
+  min-width: 0; min-height: 0; overflow: hidden; border: 1px solid rgba(36, 44, 55, .10);
+  border-radius: var(--radius); background: var(--header-bg); box-shadow: var(--shadow); position: relative;
 }
 .day-carousel::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background:
-    radial-gradient(35% 145% at 0% 50%, rgba(255, 222, 143, .11), transparent 72%),
-    radial-gradient(34% 145% at 100% 50%, rgba(105, 221, 234, .10), transparent 72%);
+    radial-gradient(32% 145% at 0% 50%, rgba(255, 255, 255, .36), transparent 72%),
+    radial-gradient(30% 145% at 100% 50%, rgba(255, 255, 255, .30), transparent 72%);
 }
+html[data-theme="dark"] .day-carousel { border-color: var(--line); }
+html[data-theme="dark"] .day-carousel::before { opacity: .14; }
 .day-rail {
   position: relative; z-index: 1; display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
   scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; touch-action: pan-x;
@@ -1579,310 +1665,362 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .day-title {
   display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: hidden;
-  font-size: clamp(17px, 2.55vw, 42px); line-height: 1; font-weight: 850; letter-spacing: -.04em;
-  text-shadow: 0 3px 26px rgba(0, 0, 0, .32); font-variant-numeric: tabular-nums;
+  color: var(--text); font-size: clamp(18px, 2.55vw, 42px); line-height: 1; font-weight: 900; letter-spacing: -.04em;
+  font-variant-numeric: tabular-nums;
 }
 .header-compact { display: none; }
-.day-panel[data-position="current"] .day-title { color: var(--text); }
 .day-panel[data-position="previous"] .day-title,
-.day-panel[data-position="next"] .day-title { color: #dbe8ee; }
+.day-panel[data-position="next"] .day-title { opacity: .76; }
 
 .header-control {
-  min-width: 44px; min-height: 44px; border: 1px solid rgba(218, 234, 241, .18); border-radius: 999px;
-  display: grid; place-items: center; color: var(--text); background: rgba(4, 19, 28, .55); cursor: pointer;
-  box-shadow: 0 8px 24px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.04);
+  min-width: 44px; min-height: 44px; border: 1px solid rgba(36, 44, 55, .13); border-radius: 999px;
+  display: grid; place-items: center; color: var(--text); background: var(--header-control-bg); cursor: pointer;
+  box-shadow: 0 7px 20px rgba(51, 55, 66, .12), inset 0 1px 0 rgba(255,255,255,.48);
   transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .16s ease;
   backdrop-filter: blur(8px);
 }
-.header-control:hover { transform: translateY(-1px); border-color: rgba(105,221,234,.46); background: rgba(18, 52, 68, .88); }
+html[data-theme="dark"] .header-control { box-shadow: 0 8px 24px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.05); }
+.header-control:hover { transform: translateY(-1px); border-color: rgba(33,143,160,.36); filter: brightness(1.02); }
 .header-control:active { transform: translateY(1px) scale(.97); }
 .header-control:disabled { opacity: .55; cursor: wait; }
 .previous-control {
   position: absolute; z-index: 5; left: clamp(6px, .8vw, 12px); top: 50%; transform: translateY(-50%);
-  width: clamp(38px, 5.2vmin, 50px); height: clamp(38px, 5.2vmin, 50px); color: #ffe3a1;
-  border-color: rgba(244,189,79,.26); background: rgba(76, 61, 31, .34); font-size: clamp(26px, 3.3vmin, 36px); line-height: 1;
+  width: clamp(40px, 5.2vmin, 52px); height: clamp(40px, 5.2vmin, 52px); color: #8a5b00;
+  border-color: rgba(217,151,18,.25); background: rgba(255, 248, 223, .78); font-size: clamp(27px, 3.3vmin, 38px); line-height: 1;
 }
-.previous-control:hover { transform: translateY(-51%); border-color: rgba(244,189,79,.55); background: rgba(99, 75, 30, .48); }
+.previous-control:hover { transform: translateY(-51%); border-color: rgba(217,151,18,.48); }
 .previous-control:active { transform: translateY(-49%) scale(.97); }
 .header-actions {
   position: absolute; z-index: 6; right: clamp(6px, .8vw, 12px); top: 50%; transform: translateY(-50%);
-  display: flex; align-items: center; gap: clamp(4px, .5vw, 8px);
+  display: flex; align-items: center;
 }
-.header-actions .header-control { position: relative; width: clamp(38px, 5.2vmin, 50px); height: clamp(38px, 5.2vmin, 50px); }
-.next-control { color: #ffe3a1; border-color: rgba(244,189,79,.26); background: rgba(76, 61, 31, .34); font-size: clamp(26px, 3.3vmin, 36px); line-height: 1; }
-.next-control:hover { border-color: rgba(244,189,79,.55); background: rgba(99, 75, 30, .48); }
-.refresh-button { color: #07222b; border-color: rgba(163,241,249,.72) !important; background: linear-gradient(145deg, #b8f4f6, var(--cyan) 58%, #44baca) !important; box-shadow: 0 8px 26px rgba(0,0,0,.28), 0 0 0 4px rgba(105,221,234,.08); }
-.refresh-button svg { width: 51%; height: 51%; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
-.refresh-button.is-refreshing svg { animation: refresh-spin .72s linear infinite; }
-@keyframes refresh-spin { to { transform: rotate(360deg); } }
+.header-actions .header-control { position: relative; width: clamp(40px, 5.2vmin, 52px); height: clamp(40px, 5.2vmin, 52px); }
+.next-control {
+  color: #8a5b00; border-color: rgba(217,151,18,.25); background: rgba(255, 248, 223, .78);
+  font-size: clamp(27px, 3.3vmin, 38px); line-height: 1;
+}
+html[data-theme="dark"] .previous-control,
+html[data-theme="dark"] .next-control { color: #ffe3a1; background: rgba(83, 66, 30, .54); }
+.next-control:hover { border-color: rgba(217,151,18,.48); }
 .live-dot {
   position: absolute; z-index: 4; left: calc(var(--header-left-space) + 10px); bottom: clamp(5px, .65vh, 9px);
-  display: inline-flex; align-items: center; gap: 6px; color: var(--cyan); font-size: clamp(8px, 1.05vh, 11px);
-  font-weight: 900; letter-spacing: .13em; text-transform: uppercase; pointer-events: none;
+  display: inline-flex; align-items: center; gap: 6px; color: var(--mint); font-size: clamp(8px, 1.05vh, 11px);
+  font-weight: 950; letter-spacing: .13em; text-transform: uppercase; pointer-events: none;
 }
-.live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(105,221,234,.13); animation: pulse 2s infinite; }
+.live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(21,151,127,.14); animation: pulse 2s infinite; }
 .live-dot[hidden] { display: none; }
-@keyframes pulse { 50% { opacity: .5; box-shadow: 0 0 0 9px rgba(105,221,234,0); } }
+@keyframes pulse { 50% { opacity: .5; box-shadow: 0 0 0 9px rgba(21,151,127,0); } }
 
 .metrics {
   min-width: 0; min-height: 0; display: grid; grid-template-rows: repeat(10, minmax(0, 1fr)); gap: var(--gap);
   transition: opacity .16s ease, transform .16s ease, filter .16s ease;
 }
-.metrics.is-busy { filter: saturate(.82) brightness(.96); }
+.metrics.is-busy { filter: saturate(.88) brightness(.98); }
 .metric-row {
-  --row-accent: var(--cyan); --row-glow: rgba(105,221,234,.11);
+  --row-accent: #218fa0;
   min-width: 0; min-height: 0; display: grid; grid-template-columns: var(--label-width) minmax(0, 1fr);
-  align-items: stretch; gap: var(--gap); border: 1px solid var(--line); border-radius: var(--radius);
-  background: linear-gradient(100deg, rgba(255,255,255,.065), rgba(255,255,255,.028));
-  overflow: hidden; box-shadow: 0 6px 24px rgba(0, 0, 0, .15), inset 3px 0 0 var(--row-accent);
+  align-items: stretch; gap: var(--gap); border: 0; border-radius: var(--radius); background: transparent;
+  overflow: visible;
 }
-.metric-row:nth-child(5n + 1) { --row-accent: #63dac2; --row-glow: rgba(99,218,194,.13); }
-.metric-row:nth-child(5n + 2) { --row-accent: #f4bd4f; --row-glow: rgba(244,189,79,.13); }
-.metric-row:nth-child(5n + 3) { --row-accent: #f184aa; --row-glow: rgba(241,132,170,.13); }
-.metric-row:nth-child(5n + 4) { --row-accent: #ff9e8d; --row-glow: rgba(255,158,141,.13); }
-.metric-row:nth-child(5n + 5) { --row-accent: #75d4e1; --row-glow: rgba(117,212,225,.13); }
+.metric-row[data-section="sun"] { --row-accent: #d6930d; }
+.metric-row[data-section="tithi"] { --row-accent: #168f79; }
+.metric-row[data-section="nakshatra"] { --row-accent: #d85282; }
+.metric-row[data-section="yoga"] { --row-accent: #7a66dc; }
+.metric-row[data-section="karana"] { --row-accent: #e26955; }
+.metric-row[data-section="choghadiya"] { --row-accent: #cc7b20; }
+.metric-row[data-section="hora"] { --row-accent: #258da4; }
+.metric-row[data-section="period"] { --row-accent: #6c64d8; }
+.metric-row[data-section="lagna"] { --row-accent: #4a76c8; }
 .metric-label {
   min-width: 0; display: flex; align-items: center; gap: clamp(7px, 1vw, 14px); padding: 0 clamp(9px, 1.3vw, 18px);
-  background: linear-gradient(102deg, var(--row-glow), rgba(255,255,255,.018));
-  border-right: 1px solid var(--line); position: relative;
+  background: color-mix(in srgb, var(--row-accent) 15%, var(--surface-strong));
+  border: 0; border-radius: var(--radius) 7px 7px var(--radius); position: relative; box-shadow: var(--shadow-soft);
 }
-.metric-label::after {
-  content: ""; position: absolute; right: -1px; top: 13%; bottom: 13%; width: 1px;
-  background: linear-gradient(transparent, var(--row-accent), transparent); opacity: .82;
-}
+.metric-label::after { display: none; }
 .metric-icon {
-  flex: 0 0 auto; width: clamp(24px, 3.55vh, 36px); aspect-ratio: 1; display: grid; place-items: center;
-  border-radius: 50%; color: var(--row-accent); background: var(--row-glow); border: 1px solid color-mix(in srgb, var(--row-accent) 36%, transparent);
-  font-size: clamp(13px, 2.2vh, 21px); line-height: 1; box-shadow: 0 0 22px var(--row-glow) inset;
+  flex: 0 0 auto; width: clamp(25px, 3.55vh, 37px); aspect-ratio: 1; display: grid; place-items: center;
+  border-radius: 50%; color: var(--row-accent); background: color-mix(in srgb, var(--row-accent) 10%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, var(--row-accent) 28%, transparent);
+  font-size: clamp(13px, 2.2vh, 21px); line-height: 1;
 }
 .metric-label h2 {
-  min-width: 0; margin: 0; color: #f5fbff; font-size: clamp(12px, 2.05vh, 20px); line-height: 1.08;
-  font-weight: 820; letter-spacing: -.022em; overflow-wrap: normal; word-break: normal; hyphens: none; text-wrap: balance;
+  min-width: 0; margin: 0; color: var(--text); font-size: clamp(12.5px, 2.05vh, 20px); line-height: 1.08;
+  font-weight: 880; letter-spacing: -.022em; overflow-wrap: normal; word-break: normal; hyphens: none; text-wrap: balance;
 }
-.timeline-wrap { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
-.timeline-wrap::before, .timeline-wrap::after {
-  content: ""; position: absolute; z-index: 3; top: 0; bottom: 0; width: clamp(8px, 2.2vw, 32px); pointer-events: none;
+.timeline-wrap {
+  min-width: 0; min-height: 0; position: relative; overflow: hidden; border-radius: 7px var(--radius) var(--radius) 7px;
+  background: color-mix(in srgb, var(--row-accent) 4%, var(--surface)); box-shadow: var(--shadow-soft);
 }
-.timeline-wrap::before { left: 0; background: linear-gradient(90deg, rgba(5,22,32,.78), transparent); }
-.timeline-wrap::after { right: 0; background: linear-gradient(270deg, rgba(5,22,32,.78), transparent); }
+.timeline-wrap::before, .timeline-wrap::after { display: none; }
 .timeline {
   width: 100%; height: 100%; min-width: 0; display: flex; align-items: stretch; gap: var(--gap);
-  overflow-x: auto; overflow-y: hidden; padding: clamp(3px, .45vh, 6px) clamp(13px, 3vw, 46px);
-  scroll-padding-inline: 50%; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain;
+  overflow-x: auto; overflow-y: hidden; padding: clamp(3px, .45vh, 6px) clamp(13px, 2vw, 30px) clamp(3px, .45vh, 6px) 0;
+  scroll-padding-left: 0; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain;
   touch-action: pan-x; -webkit-overflow-scrolling: touch; cursor: grab;
 }
 .timeline:active { cursor: grabbing; }
 .moment {
-  --quality-color: rgba(201,226,238,.42); --quality-bg: rgba(255,255,255,.062);
-  flex: 0 0 clamp(230px, 37vw, 520px); min-width: 0; height: 100%; scroll-snap-align: center;
+  --quality-color: transparent;
+  --quality-bg: color-mix(in srgb, var(--row-accent) 6%, var(--surface-strong));
+  flex: 0 0 clamp(244px, 37vw, 520px); min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: normal;
   display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 1fr 1fr; align-items: center;
   column-gap: clamp(8px, 1vw, 14px); padding: 0 clamp(12px, 1.45vw, 19px); border-radius: calc(var(--radius) - 4px);
-  border: 1px solid rgba(201,226,238,.14); background: var(--quality-bg); color: var(--text);
+  border: 2px solid transparent; background: var(--quality-bg); color: var(--text); box-shadow: 0 1px 3px rgba(39,44,54,.06);
   transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
   position: relative; contain: layout paint; font-variant-numeric: tabular-nums;
 }
-.moment::before { content: ""; position: absolute; left: 0; top: 17%; bottom: 17%; width: 3px; border-radius: 0 999px 999px 0; background: var(--quality-color); opacity: .92; }
-.moment.neutral { --quality-color: var(--lavender); --quality-bg: rgba(157,153,235,.075); }
-.moment.auspicious { --quality-color: var(--mint); --quality-bg: var(--good-bg); }
-.moment.inauspicious { --quality-color: var(--rose); --quality-bg: var(--bad-bg); }
-.moment:hover { border-color: rgba(201,226,238,.34); filter: brightness(1.05); }
-.moment.is-current {
-  transform: translateZ(0) scale(1.008); border: 2px solid rgba(105,221,234,.72);
-  background: linear-gradient(110deg, rgba(105,221,234,.21), var(--quality-bg) 72%);
-  box-shadow: 0 0 0 1px rgba(105,221,234,.10) inset, 0 8px 26px rgba(0,0,0,.19), 0 0 24px rgba(105,221,234,.08);
+html[data-theme="dark"] .moment { box-shadow: 0 2px 7px rgba(0,0,0,.13); }
+.moment::before { display: none; }
+.moment.neutral { --quality-bg: color-mix(in srgb, var(--row-accent) 6%, var(--surface-strong)); }
+.moment.auspicious { --quality-color: var(--good); --quality-bg: var(--good-bg); }
+.moment.inauspicious { --quality-color: var(--bad); --quality-bg: var(--bad-bg); }
+.moment.auspicious::before,
+.moment.inauspicious::before {
+  content: ""; display: block; position: absolute; left: 0; top: 15%; bottom: 15%; width: 4px;
+  border-radius: 0 999px 999px 0; background: var(--quality-color);
 }
-.moment.is-current::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+.moment:hover { filter: brightness(1.015); }
+.moment.is-current {
+  transform: translateZ(0); border-color: transparent;
+  background: color-mix(in srgb, var(--row-accent) 11%, var(--surface-strong));
+  box-shadow: 0 7px 18px rgba(42,48,59,.10);
+}
+.moment.neutral.is-current::before {
+  content: ""; display: block; position: absolute; left: 0; top: 15%; bottom: 15%; width: 4px;
+  border-radius: 0 999px 999px 0; background: var(--row-accent);
+}
+.moment.auspicious.is-current { border-color: var(--good); background: var(--good-bg); box-shadow: 0 0 0 2px rgba(19,135,111,.10), 0 7px 18px rgba(42,48,59,.10); }
+.moment.inauspicious.is-current { border-color: var(--bad); background: var(--bad-bg); box-shadow: 0 0 0 2px rgba(200,66,97,.10), 0 7px 18px rgba(42,48,59,.10); }
+.moment.is-current::after { display: none; }
 .moment-title {
   grid-column: 1; grid-row: 1; align-self: end; min-width: 0; padding-bottom: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(13px, 2.1vh, 20px);
-  line-height: 1.04; font-weight: 850; letter-spacing: -.018em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(14px, 2.1vh, 20px);
+  line-height: 1.04; font-weight: 890; letter-spacing: -.018em;
 }
 .moment-time {
-  grid-column: 1; grid-row: 2; align-self: start; min-width: 0; padding-top: 2px;
+  grid-column: 1 / -1; grid-row: 2; align-self: start; min-width: 0; padding-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted);
-  font-size: clamp(11px, 1.65vh, 16px); line-height: 1.08; font-weight: 650;
+  font-size: clamp(12px, 1.68vh, 16px); line-height: 1.08; font-weight: 690;
 }
 .badges {
-  grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
-  gap: clamp(2px, .34vh, 4px); min-width: 0;
+  grid-column: 2; grid-row: 1; display: flex; flex-direction: row; align-items: flex-end; justify-content: flex-end;
+  align-self: end; gap: clamp(2px, .34vh, 4px); min-width: 0; padding-bottom: 2px;
 }
+.badges:empty { display: none; }
 .badge {
   max-width: clamp(78px, 18vw, 126px); padding: clamp(2px, .35vh, 4px) clamp(6px, .72vw, 10px);
   border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: clamp(7.5px, 1.16vh, 11px); line-height: 1.05; font-weight: 950; letter-spacing: .065em;
-  text-transform: uppercase; border: 1px solid transparent;
+  font-size: clamp(7.5px, 1.16vh, 11px); line-height: 1.05; font-weight: 950; letter-spacing: .055em;
+  text-transform: uppercase; border: 0;
 }
-.badge.now { color: #062029; background: var(--cyan); border-color: #b9f7fb; box-shadow: 0 0 18px rgba(105,221,234,.28); }
-.badge.good { color: #e6fff7; background: rgba(37,156,118,.37); border-color: rgba(98,221,180,.55); }
-.badge.bad { color: #fff0f2; background: rgba(184,56,76,.38); border-color: rgba(255,137,149,.58); }
-.badge.neutral { color: #f1efff; background: rgba(124,117,221,.27); border-color: rgba(185,180,255,.44); }
+.badge.good { color: #0e5f4e; background: #bcebdc; }
+.badge.bad { color: #873049; background: #ffc8d3; }
+.badge.neutral { color: #4f489e; background: #dedbff; }
+html[data-theme="dark"] .badge.good { color: #e9fff7; background: rgba(33,143,111,.52); }
+html[data-theme="dark"] .badge.bad { color: #fff0f3; background: rgba(180,58,83,.55); }
+html[data-theme="dark"] .badge.neutral { color: #f2f0ff; background: rgba(105,96,203,.50); }
+
+.reserved-row { pointer-events: none; }
+.reserved-row .reserved-label,
+.reserved-row .reserved-space {
+  min-width: 0; min-height: 0; border-radius: var(--radius);
+  background: rgba(255,255,255,.30); box-shadow: inset 0 0 0 1px rgba(36,44,55,.035);
+}
+html[data-theme="dark"] .reserved-row .reserved-label,
+html[data-theme="dark"] .reserved-row .reserved-space { background: rgba(255,255,255,.025); box-shadow: inset 0 0 0 1px rgba(255,255,255,.025); }
 
 .fab {
   position: fixed; z-index: 20; right: max(12px, calc((100vw - 1920px) / 2 + 16px)); bottom: max(12px, env(safe-area-inset-bottom));
-  width: clamp(50px, 7.2vmin, 66px); aspect-ratio: 1; border: 1px solid rgba(255,229,181,.72); border-radius: 50%;
-  display: grid; place-items: center; color: #301b10; cursor: pointer;
-  background: linear-gradient(145deg, #ffe7ad, var(--gold) 45%, var(--peach));
-  box-shadow: 0 14px 36px rgba(0,0,0,.40), 0 0 0 5px rgba(244,189,79,.10);
+  width: clamp(52px, 7.2vmin, 68px); aspect-ratio: 1; border: 1px solid rgba(182, 102, 31, .20); border-radius: 50%;
+  display: grid; place-items: center; color: #381d0e; cursor: pointer;
+  background: linear-gradient(145deg, #fff2b7, #ffc46e 48%, #ff9a82);
+  box-shadow: 0 14px 34px rgba(95, 63, 36, .22), 0 0 0 5px rgba(255, 190, 111, .16);
   transition: transform .17s ease, box-shadow .17s ease, filter .17s ease;
 }
+html[data-theme="dark"] .fab { color: #32190d; box-shadow: 0 14px 36px rgba(0,0,0,.40), 0 0 0 5px rgba(244,189,79,.10); }
 .fab svg { width: 43%; height: 43%; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
-.fab:hover { transform: translateY(-2px) rotate(-3deg); box-shadow: 0 18px 40px rgba(0,0,0,.43), 0 0 0 7px rgba(244,189,79,.11); }
+.fab:hover { transform: translateY(-2px) rotate(-3deg); filter: brightness(1.02); }
 .fab:active { transform: translateY(1px) scale(.97); }
 .fab::after {
   content: attr(data-tooltip); position: absolute; right: calc(100% + 10px); top: 50%; transform: translateY(-50%) translateX(4px);
   opacity: 0; pointer-events: none; white-space: nowrap; padding: 8px 11px; border-radius: 10px;
-  color: var(--text); background: rgba(4,16,25,.97); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 700;
-  transition: opacity .15s ease, transform .15s ease;
+  color: var(--text); background: var(--surface-strong); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 750;
+  box-shadow: var(--shadow-soft); transition: opacity .15s ease, transform .15s ease;
 }
 .fab:hover::after, .fab:focus-visible::after { opacity: 1; transform: translateY(-50%) translateX(0); }
 
 .settings-sheet {
-  width: min(94vw, 650px); max-height: min(94dvh, 820px); margin: auto; padding: 0; border: 1px solid rgba(201,226,238,.29);
-  border-radius: clamp(20px, 4vw, 32px); color: var(--text); background: linear-gradient(155deg, rgba(20,49,67,.998), rgba(5,22,33,.998));
-  box-shadow: 0 35px 100px rgba(0,0,0,.65); overflow: hidden;
+  width: min(94vw, 650px); max-height: min(94dvh, 820px); margin: auto; padding: 0; border: 1px solid var(--line-strong);
+  border-radius: clamp(20px, 4vw, 32px); color: var(--text); background: var(--surface-strong);
+  box-shadow: 0 30px 90px rgba(54,55,64,.24); overflow: hidden;
 }
-.settings-sheet::backdrop { background: rgba(1,8,14,.76); backdrop-filter: blur(9px) saturate(.78); }
+html[data-theme="dark"] .settings-sheet { box-shadow: 0 35px 100px rgba(0,0,0,.64); }
+.settings-sheet::backdrop { background: rgba(25, 28, 35, .46); backdrop-filter: blur(8px) saturate(.90); }
+html[data-theme="dark"] .settings-sheet::backdrop { background: rgba(1,8,14,.72); }
 .settings-form { max-height: min(94dvh, 820px); display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
 .sheet-head {
   display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: clamp(16px, 3vw, 25px);
-  border-bottom: 1px solid var(--line); background: rgba(255,255,255,.028);
+  border-bottom: 1px solid var(--line); background: linear-gradient(110deg, #dff7ef, #fff2c7 45%, #f9dce7);
 }
+html[data-theme="dark"] .sheet-head { background: linear-gradient(110deg, #223f39, #433b25 45%, #422d38); }
 .sheet-head h2 { margin: 0; font-size: clamp(22px, 3.7vw, 30px); letter-spacing: -.025em; }
 .icon-button {
-  width: 44px; aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); background: rgba(255,255,255,.06);
+  width: 44px; aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); background: var(--surface-soft);
   color: var(--text); cursor: pointer; display: grid; place-items: center; font-size: 24px;
 }
-.icon-button:hover { background: rgba(255,255,255,.11); }
+.icon-button:hover { filter: brightness(.98); }
 .sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: clamp(15px, 3vw, 25px); display: grid; gap: 16px; }
 .field { display: grid; gap: 8px; min-width: 0; }
-.field > label, .field-label { color: #e4f0f5; font-size: 14px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
+.field > label, .field-label { color: var(--text); font-size: 14px; font-weight: 900; letter-spacing: .045em; text-transform: uppercase; }
 .input-shell { position: relative; min-width: 0; }
 .input-shell input, .field input, .field select {
   width: 100%; min-width: 0; height: 52px; border: 1px solid var(--line-strong); border-radius: 14px;
-  color: var(--text); background: rgba(255,255,255,.065); padding: 0 14px; outline: none; font-size: 16px;
+  color: var(--text); background: color-mix(in srgb, var(--cyan) 3%, var(--surface-strong)); padding: 0 14px; outline: none; font-size: 17px;
   transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.field select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 19px) 22px, calc(100% - 13px) 22px; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 40px; }
-.input-shell input:focus, .field input:focus, .field select:focus { border-color: rgba(105,221,234,.76); box-shadow: 0 0 0 4px rgba(105,221,234,.11); background: rgba(255,255,255,.085); }
-.field input:disabled { opacity: .5; cursor: not-allowed; }
+.field select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 19px) 22px, calc(100% - 13px) 22px; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 40px;
+}
+.input-shell input:focus, .field input:focus, .field select:focus { border-color: rgba(33,143,160,.70); box-shadow: 0 0 0 4px rgba(33,143,160,.12); background: var(--surface-strong); }
+.field input:disabled { opacity: .52; cursor: not-allowed; }
 .place-results { display: grid; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; border-radius: 13px; }
 .place-result {
   width: 100%; min-height: 50px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; text-align: left; cursor: pointer;
-  color: var(--text); background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  color: var(--text); background: color-mix(in srgb, var(--cyan) 4%, var(--surface-strong)); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
 }
-.place-result:hover, .place-result:focus-visible { border-color: rgba(105,221,234,.50); background: rgba(105,221,234,.10); }
-.place-main { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; font-weight: 780; }
+.place-result:hover, .place-result:focus-visible { border-color: rgba(33,143,160,.45); background: color-mix(in srgb, var(--cyan) 10%, var(--surface-strong)); }
+.place-main { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; font-weight: 800; }
 .place-sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 13px; }
 .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; padding: 0 2px; }
-.switch-row label { font-size: 16px; font-weight: 760; color: #ecf6fa; }
+.switch-row > label:first-child { font-size: 16px; font-weight: 780; color: var(--text); }
 .switch { position: relative; width: 54px; height: 30px; flex: 0 0 auto; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
-.switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid var(--line-strong); transition: .18s ease; cursor: pointer; }
-.switch-track::after { content: ""; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px; border-radius: 50%; background: #dce9ef; box-shadow: 0 2px 8px rgba(0,0,0,.28); transition: .18s ease; }
-.switch input:checked + .switch-track { background: rgba(73,201,158,.28); border-color: rgba(98,221,180,.58); }
+.switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(95,102,114,.17); border: 1px solid var(--line-strong); transition: .18s ease; cursor: pointer; }
+.switch-track::after { content: ""; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px; border-radius: 50%; background: var(--surface-strong); box-shadow: 0 2px 8px rgba(0,0,0,.18); transition: .18s ease; }
+.switch input:checked + .switch-track { background: rgba(21,151,127,.24); border-color: rgba(21,151,127,.50); }
 .switch input:checked + .switch-track::after { transform: translateX(24px); background: var(--mint); }
-.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 4px rgba(105,221,234,.14); }
-.location-button {
-  min-height: 50px; border: 1px solid rgba(105,221,234,.34); border-radius: 14px; color: #e4fbff;
-  background: rgba(105,221,234,.10); cursor: pointer; font-size: 16px; font-weight: 790;
+.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 4px rgba(33,143,160,.14); }
+.theme-field { border: 0; margin: 0; padding: 0; }
+.theme-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 5px; border-radius: 15px; background: color-mix(in srgb, var(--lavender) 6%, var(--surface-strong)); border: 1px solid var(--line); }
+.theme-choice {
+  min-height: 46px; border: 0; border-radius: 11px; color: var(--muted); background: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-size: 16px; font-weight: 850;
 }
-.location-button:hover { background: rgba(105,221,234,.17); border-color: rgba(105,221,234,.57); }
+.theme-choice svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.theme-choice[aria-pressed="true"] { color: var(--text); background: var(--surface-strong); box-shadow: 0 4px 13px rgba(47,49,58,.10); }
+html[data-theme="dark"] .theme-choice[aria-pressed="true"] { box-shadow: 0 5px 15px rgba(0,0,0,.22); }
+.location-button {
+  min-height: 50px; border: 1px solid rgba(33,143,160,.28); border-radius: 14px; color: #126575;
+  background: #e4f6f7; cursor: pointer; font-size: 16px; font-weight: 820;
+}
+html[data-theme="dark"] .location-button { color: #e7fbfd; background: rgba(33,143,160,.16); }
+.location-button:hover { filter: brightness(.98); border-color: rgba(33,143,160,.48); }
 .sheet-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.48; }
 .sheet-actions {
   display: grid; grid-template-columns: 1fr 1.55fr; gap: 11px; padding: clamp(14px, 3vw, 23px);
-  border-top: 1px solid var(--line); background: rgba(0,0,0,.13);
+  border-top: 1px solid var(--line); background: color-mix(in srgb, var(--gold) 3%, var(--surface-strong));
 }
-.action-button { min-height: 52px; border-radius: 15px; border: 1px solid var(--line-strong); cursor: pointer; font-size: 16px; font-weight: 860; }
-.action-button.secondary { color: var(--text); background: rgba(255,255,255,.06); }
-.action-button.primary { color: #2c1908; background: linear-gradient(135deg, #ffe7a8, var(--gold)); border-color: rgba(255,227,165,.78); box-shadow: 0 8px 24px rgba(244,189,79,.16); }
-.action-button:hover { filter: brightness(1.06); }
+.action-button { min-height: 52px; border-radius: 15px; border: 1px solid var(--line-strong); cursor: pointer; font-size: 16px; font-weight: 880; }
+.action-button.secondary { color: var(--text); background: var(--surface-soft); }
+.action-button.primary { color: #321d0b; background: linear-gradient(135deg, #fff0ad, #ffc966 58%, #f8a56f); border-color: rgba(202,139,25,.30); box-shadow: 0 8px 22px rgba(190,124,27,.14); }
+.action-button:hover { filter: brightness(1.02); }
 
 .toast {
   position: fixed; z-index: 50; left: 50%; bottom: max(17px, env(safe-area-inset-bottom)); transform: translate(-50%, 18px);
   max-width: min(90vw, 560px); padding: 11px 15px; border-radius: 13px; color: var(--text);
-  background: rgba(4,17,28,.97); border: 1px solid var(--line-strong); box-shadow: 0 13px 38px rgba(0,0,0,.40);
-  font-size: 14px; font-weight: 720; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+  background: var(--surface-strong); border: 1px solid var(--line-strong); box-shadow: 0 13px 38px rgba(47,49,58,.18);
+  font-size: 14px; font-weight: 760; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .loading-mask {
   position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0;
-  background: rgba(3,12,20,.20); transition: opacity .12s ease;
+  background: rgba(246, 244, 239, .36); transition: opacity .12s ease;
 }
+html[data-theme="dark"] .loading-mask { background: rgba(3,12,20,.24); }
 .loading-mask.show { opacity: 1; }
-.spinner { width: 40px; aspect-ratio: 1; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--gold); animation: spin .7s linear infinite; box-shadow: 0 0 30px rgba(244,189,79,.14); }
+.spinner { width: 40px; aspect-ratio: 1; border-radius: 50%; border: 3px solid rgba(95,102,114,.16); border-top-color: var(--gold); animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 :focus-visible { outline: 3px solid var(--cyan); outline-offset: 3px; }
 
 @media (min-width: 900px) {
   :root { --label-width: clamp(220px, 20vw, 310px); }
-  .moment { flex-basis: clamp(330px, 30vw, 560px); }
+  .moment { flex-basis: clamp(340px, 30vw, 560px); }
 }
 
 @media (max-width: 560px) {
   :root {
-    --label-width: clamp(106px, 30vw, 128px);
-    --header-left-space: 42px;
-    --header-right-space: 88px;
-    --header-height: clamp(52px, 7.8vh, 68px);
+    --label-width: clamp(108px, 30vw, 130px);
+    --header-left-space: 44px;
+    --header-right-space: 44px;
+    --header-height: clamp(54px, 7.8vh, 70px);
   }
   .header-full { display: none; }
   .header-compact { display: inline; }
   .day-panel { padding-left: calc(var(--header-left-space) + 3px); padding-right: calc(var(--header-right-space) + 3px); }
-  .day-title { font-size: clamp(15px, 4.55vw, 21px); letter-spacing: -.035em; }
+  .day-title { font-size: clamp(15px, 4.65vw, 21px); letter-spacing: -.035em; }
   .previous-control { left: 5px; width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
-  .header-actions { right: 5px; gap: 4px; }
+  .header-actions { right: 5px; }
   .header-actions .header-control { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
   .live-dot { display: none; }
   .metric-label { gap: 6px; padding-inline: 7px; }
   .metric-icon { width: clamp(22px, 3.25vh, 29px); font-size: clamp(12px, 1.9vh, 16px); }
-  .metric-label h2 { font-size: clamp(12.5px, 1.86vh, 16px); line-height: 1.04; }
-  .timeline { padding-inline: 9px 25px; }
-  .moment { flex-basis: calc(100vw - var(--label-width) - 18px); min-width: 196px; max-width: 350px; padding-inline: 9px; column-gap: 5px; }
-  .moment-title { font-size: clamp(14px, 1.98vh, 17.5px); }
-  .moment-time { font-size: clamp(12px, 1.70vh, 14.5px); }
+  .metric-label h2 { font-size: clamp(12.8px, 1.90vh, 16px); line-height: 1.04; }
+  .timeline { padding-right: 22px; }
+  .moment { flex-basis: calc(100vw - var(--label-width) - 15px); min-width: 198px; max-width: 360px; padding-inline: 10px; column-gap: 5px; }
+  .moment-title { font-size: clamp(14.3px, 2.02vh, 18px); }
+  .moment-time { font-size: clamp(12.2px, 1.73vh, 15px); }
   .badge { max-width: 83px; }
   .badges { gap: 1px; }
-  .fab { width: 52px; right: 9px; bottom: max(9px, env(safe-area-inset-bottom)); }
+  .fab { width: 54px; right: 9px; bottom: max(9px, env(safe-area-inset-bottom)); }
   .fab::after { display: none; }
   .form-grid { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 560px) and (min-height: 650px) {
+  .moment-time {
+    white-space: normal; text-overflow: clip; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    line-height: 1.03; overflow: hidden;
+  }
+}
+
 @media (max-width: 360px) {
-  :root { --label-width: 106px; --header-right-space: 84px; }
+  :root { --label-width: 108px; --header-left-space: 40px; --header-right-space: 40px; }
   .metric-label { padding-inline: 5px; gap: 5px; }
-  .metric-icon { width: 20px; }
-  .metric-label h2 { font-size: 12.5px; line-height: 1.01; }
-  .moment { min-width: 184px; padding-inline: 8px; }
+  .metric-icon { width: 21px; }
+  .metric-label h2 { font-size: 12.6px; line-height: 1.01; }
+  .moment { min-width: 188px; padding-inline: 8px; }
   .badge { padding-inline: 5px; max-width: 76px; }
-  .fab { width: 47px; }
+  .fab { width: 48px; }
 }
 
 @media (max-height: 640px) {
-  :root { --gap: 2px; --pad: 4px; --radius: 10px; --header-height: 46px; }
+  :root { --gap: 2px; --pad: 4px; --radius: 10px; --header-height: 47px; }
   .day-title { font-size: clamp(13px, 2.55vw, 25px); }
   .previous-control, .header-actions .header-control { width: 38px; height: 38px; min-width: 38px; min-height: 38px; }
   .live-dot { display: none; }
   .metric-label { padding-inline: 6px; gap: 5px; }
-  .metric-icon { width: 19px; font-size: 10px; }
-  .metric-label h2 { font-size: clamp(12px, 2.25vh, 13px); line-height: 1.01; }
+  .metric-icon { width: 20px; font-size: 10px; }
+  .metric-label h2 { font-size: clamp(12px, 2.25vh, 13.2px); line-height: 1.01; }
   .timeline { padding-block: 2px; }
   .moment { padding-inline: 8px; column-gap: 6px; }
-  .moment-title { font-size: clamp(13.5px, 2.55vh, 14.5px); }
-  .moment-time { font-size: clamp(11.5px, 2.15vh, 12.5px); }
+  .moment-title { font-size: clamp(13.5px, 2.55vh, 14.8px); }
+  .moment-time { font-size: clamp(11.5px, 2.15vh, 12.8px); }
   .badge { font-size: clamp(7px, 1.45vh, 8px); padding: 2px 4px; max-width: 72px; }
   .fab { width: 44px; }
 }
 
 @media (orientation: landscape) and (max-height: 480px) {
-  :root { --label-width: clamp(122px, 19vw, 198px); --header-height: 40px; }
+  :root { --label-width: clamp(126px, 19vw, 198px); --header-height: 41px; --header-left-space: 36px; --header-right-space: 36px; }
   .day-title { font-size: clamp(12px, 2.1vw, 20px); }
   .previous-control, .header-actions .header-control { width: 30px; height: 30px; min-width: 30px; min-height: 30px; font-size: 23px; }
-  .moment { flex-basis: clamp(270px, 39vw, 420px); grid-template-rows: 1fr; grid-template-columns: minmax(0,1.2fr) minmax(0,.95fr) auto; padding-inline: 8px; column-gap: 6px; }
-  .metric-label h2 { font-size: 10.5px; }
-  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: 0; font-size: 11px; }
-  .moment-time { grid-column: 2; grid-row: 1; align-self: center; padding: 0; text-align: right; font-size: 9.5px; }
+  .moment { flex-basis: clamp(280px, 39vw, 430px); grid-template-rows: 1fr; grid-template-columns: minmax(0,1.2fr) minmax(0,.95fr) auto; padding-inline: 8px; column-gap: 6px; }
+  .metric-label h2 { font-size: 10.8px; }
+  .moment-title { grid-column: 1; grid-row: 1; align-self: center; padding: 0; font-size: 11.2px; }
+  .moment-time { grid-column: 2; grid-row: 1; align-self: center; padding: 0; text-align: right; font-size: 9.7px; }
   .badges { grid-column: 3; grid-row: 1; margin-left: 2px; gap: 1px; }
   .badge { font-size: 6.5px; padding: 1px 4px; }
   .fab { width: 36px; right: 6px; bottom: 6px; }
@@ -1893,7 +2031,7 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 @media (forced-colors: active) {
-  .moment, .metric-row, .day-carousel, .fab, .header-control { border: 1px solid CanvasText; }
+  .moment, .metric-label, .timeline-wrap, .day-carousel, .fab, .header-control { border: 1px solid CanvasText; }
   .badge { border: 1px solid CanvasText; }
 }
 """
@@ -1945,11 +2083,13 @@ JS = r"""
   const locationButton = $('#locationButton');
   const previousDayButton = $('#previousDayButton');
   const nextDayButton = $('#nextDayButton');
-  const refreshButton = $('#refreshButton');
   const toastNode = $('#toast');
   const loadingMask = $('#loadingMask');
   const liveIndicator = $('#liveIndicator');
   const ldJsonNode = $('#structuredData');
+  const themeColorMeta = $('#themeColor');
+  const themeButtons = $$('[data-theme-choice]');
+  let activeTheme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 
   const cssEscape = window.CSS && typeof window.CSS.escape === 'function'
     ? window.CSS.escape.bind(window.CSS)
@@ -1959,6 +2099,18 @@ JS = r"""
     en: 'en-IN', hi: 'hi-IN', mr: 'mr-IN', gu: 'gu-IN', bn: 'bn-IN', ta: 'ta-IN',
     te: 'te-IN', kn: 'kn-IN', ml: 'ml-IN', pa: 'pa-IN', or: 'or-IN', ne: 'ne-NP', sa: 'sa-IN'
   };
+
+  function applyTheme(theme, persist = true) {
+    activeTheme = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = activeTheme;
+    themeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === activeTheme)));
+    if (themeColorMeta) themeColorMeta.content = activeTheme === 'dark' ? '#16242d' : '#f6f2ea';
+    if (persist) {
+      try { localStorage.setItem('panchang-theme', activeTheme); } catch (_) { /* Storage is optional. */ }
+    }
+  }
+
+  applyTheme(activeTheme, false);
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -1981,7 +2133,6 @@ JS = r"""
 
   function renderMoment(item) {
     const badges = [];
-    if (item.current) badges.push(`<span class="badge now">${escapeHtml(item.badge || state.ui.selected)}</span>`);
     const qBadge = qualityBadge(item);
     if (qBadge) badges.push(qBadge);
     if (item.detail && item.detail === state.ui.mixed) badges.push(`<span class="badge neutral">${escapeHtml(item.detail)}</span>`);
@@ -1997,17 +2148,21 @@ JS = r"""
       </article>`;
   }
 
+  function alignedCurrentScrollLeft(rail, current) {
+    const leftPadding = parseFloat(getComputedStyle(rail).paddingLeft) || 0;
+    return Math.max(0, current.offsetLeft - leftPadding);
+  }
+
   function captureTimelineState() {
     const snapshot = {};
     $$('.metric-row', metrics).forEach(row => {
       const rail = $('.timeline', row);
       if (!rail) return;
       const current = $('.moment.is-current', rail);
-      const viewportCenter = rail.scrollLeft + rail.clientWidth / 2;
-      const currentCenter = current ? current.offsetLeft + current.offsetWidth / 2 : Number.NaN;
+      const target = current ? alignedCurrentScrollLeft(rail, current) : Number.NaN;
       snapshot[row.dataset.section] = {
         scrollLeft: rail.scrollLeft,
-        nearCurrent: Number.isFinite(currentCenter) && Math.abs(viewportCenter - currentCenter) <= Math.max(42, current.offsetWidth * .36)
+        nearCurrent: Number.isFinite(target) && Math.abs(rail.scrollLeft - target) <= Math.max(34, current.offsetWidth * .18)
       };
     });
     return snapshot;
@@ -2020,7 +2175,7 @@ JS = r"""
       if (!rail || !saved) return;
       const current = $('.moment.is-current', rail);
       if (saved.nearCurrent && current) {
-        rail.scrollLeft = current.offsetLeft - (rail.clientWidth - current.offsetWidth) / 2;
+        rail.scrollLeft = alignedCurrentScrollLeft(rail, current);
       } else {
         rail.scrollLeft = Math.min(saved.scrollLeft, Math.max(0, rail.scrollWidth - rail.clientWidth));
       }
@@ -2028,20 +2183,25 @@ JS = r"""
   }
 
   function renderSections(timelineState = null) {
-    metrics.innerHTML = state.sections.map(section => `
-      <section class="metric-row" data-section="${escapeHtml(section.key)}" itemscope itemtype="https://schema.org/Observation">
-        <div class="metric-label">
-          <span class="metric-icon" aria-hidden="true">${escapeHtml(section.icon)}</span>
-          <h2 itemprop="variableMeasured">${escapeHtml(section.label)}</h2>
-        </div>
-        <div class="timeline-wrap">
-          <div class="timeline" tabindex="0" role="list" aria-label="${escapeHtml(section.label)} — ${escapeHtml(state.ui.timeline_hint)}">
-            ${section.items.map(renderMoment).join('')}
+    metrics.innerHTML = state.sections.map(section => {
+      if (section.reserved) {
+        return `<section class="metric-row reserved-row" data-section="reserved" aria-hidden="true"><div class="reserved-label"></div><div class="reserved-space"></div></section>`;
+      }
+      return `
+        <section class="metric-row" data-section="${escapeHtml(section.key)}" itemscope itemtype="https://schema.org/Observation">
+          <div class="metric-label">
+            <span class="metric-icon" aria-hidden="true">${escapeHtml(section.icon)}</span>
+            <h2 itemprop="variableMeasured">${escapeHtml(section.label)}</h2>
           </div>
-        </div>
-      </section>`).join('');
+          <div class="timeline-wrap">
+            <div class="timeline" tabindex="0" role="list" aria-label="${escapeHtml(section.label)} — ${escapeHtml(state.ui.timeline_hint)}">
+              ${section.items.map(renderMoment).join('')}
+            </div>
+          </div>
+        </section>`;
+    }).join('');
     bindTimelineInteractions();
-    requestAnimationFrame(() => timelineState ? restoreTimelineState(timelineState) : centerCurrentItems());
+    requestAnimationFrame(() => timelineState ? restoreTimelineState(timelineState) : alignCurrentItems());
   }
 
   function bindTimelineInteractions() {
@@ -2064,11 +2224,11 @@ JS = r"""
     });
   }
 
-  function centerCurrentItems() {
+  function alignCurrentItems() {
     $$('.timeline', metrics).forEach(rail => {
       const current = $('.moment.is-current', rail);
       if (!current) return;
-      rail.scrollLeft = current.offsetLeft - (rail.clientWidth - current.offsetWidth) / 2;
+      rail.scrollLeft = alignedCurrentScrollLeft(rail, current);
     });
   }
 
@@ -2124,9 +2284,8 @@ JS = r"""
     closeButton.setAttribute('aria-label', state.ui.close);
     previousDayButton.setAttribute('aria-label', state.ui.previous_day);
     nextDayButton.setAttribute('aria-label', state.ui.next_day);
-    refreshButton.setAttribute('aria-label', state.ui.refresh);
-    refreshButton.setAttribute('title', `${state.ui.refresh} · ${state.ui.auto_refresh}`);
     liveIndicator.textContent = state.ui.live;
+    applyTheme(activeTheme, false);
   }
 
   function renderSeo() {
@@ -2283,22 +2442,11 @@ JS = r"""
     await fetchPanchang(direction, 'push');
   }
 
-  async function refreshNow({manual = false, preserveScroll = true} = {}) {
+  async function refreshNow({preserveScroll = true} = {}) {
     if (loading) return false;
     const timelineState = preserveScroll ? captureTimelineState() : null;
     if (settings.live) applyCurrentZonedTime();
-    refreshButton.classList.add('is-refreshing');
-    refreshButton.disabled = true;
-    refreshButton.setAttribute('aria-busy', 'true');
-    try {
-      const ok = await fetchPanchang(0, 'replace', {timelineState, showMask: manual});
-      if (ok && manual) showToast(state.ui.refreshed);
-      return ok;
-    } finally {
-      refreshButton.classList.remove('is-refreshing');
-      refreshButton.disabled = false;
-      refreshButton.removeAttribute('aria-busy');
-    }
+    return fetchPanchang(0, 'replace', {timelineState, showMask: false});
   }
 
   dayRail.addEventListener('scroll', () => {
@@ -2322,13 +2470,15 @@ JS = r"""
 
   previousDayButton.addEventListener('click', () => shiftDay(-1));
   nextDayButton.addEventListener('click', () => shiftDay(1));
-  refreshButton.addEventListener('click', () => refreshNow({manual: true, preserveScroll: false}));
 
   function openDialog() {
     syncForm();
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else dialog.setAttribute('open', '');
-    requestAnimationFrame(() => placeInput.focus());
+    requestAnimationFrame(() => {
+      placeInput.focus();
+      selectPlaceText();
+    });
   }
 
   function closeDialog() {
@@ -2342,6 +2492,7 @@ JS = r"""
     timeInput.value = settings.time;
     languageInput.value = settings.language;
     liveInput.checked = Boolean(settings.live);
+    applyTheme(activeTheme, false);
     toggleLiveFields();
     placeResults.innerHTML = '';
     selectedPlace = true;
@@ -2352,9 +2503,17 @@ JS = r"""
     timeInput.disabled = liveInput.checked;
   }
 
+  function selectPlaceText() {
+    if (!placeInput.value) return;
+    try { placeInput.select(); } catch (_) { /* Selection is best-effort on mobile browsers. */ }
+  }
+
   editButton.addEventListener('click', openDialog);
   closeButton.addEventListener('click', closeDialog);
   cancelButton.addEventListener('click', closeDialog);
+  themeButtons.forEach(button => button.addEventListener('click', () => applyTheme(button.dataset.themeChoice)));
+  placeInput.addEventListener('focus', () => requestAnimationFrame(selectPlaceText));
+  placeInput.addEventListener('click', selectPlaceText);
   liveInput.addEventListener('change', toggleLiveFields);
   languageInput.addEventListener('change', () => { settings.language = languageInput.value; });
   dialog.addEventListener('click', event => {
@@ -2438,6 +2597,20 @@ JS = r"""
     settings.time = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
   }
 
+  async function reverseDevicePlace(latitude, longitude) {
+    try {
+      const params = new URLSearchParams({lat: String(latitude), lon: String(longitude), lang: settings.language});
+      const response = await fetch(`/api/reverse-place?${params.toString()}`, {headers: {'Accept': 'application/json'}, cache: 'force-cache'});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.place?.name) return payload.place;
+    } catch (error) {
+      console.warn('City name could not be resolved.', error);
+    }
+    const coordinateName = `${Number(latitude).toFixed(3)}, ${Number(longitude).toFixed(3)}`;
+    return {name: coordinateName, display_name: coordinateName, country: '', slug: ''};
+  }
+
   async function useDeviceLocation({auto = false, fetchImmediately = false} = {}) {
     if (!navigator.geolocation) {
       if (!auto) showToast(state.ui.location_denied);
@@ -2451,13 +2624,15 @@ JS = r"""
       settings.lat = Number(position.coords.latitude.toFixed(6));
       settings.lon = Number(position.coords.longitude.toFixed(6));
       settings.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || settings.timezone;
-      settings.place = state.ui.current_location;
-      settings.country = '';
+      const resolvedPlace = await reverseDevicePlace(settings.lat, settings.lon);
+      settings.place = resolvedPlace.name;
+      settings.country = resolvedPlace.country || '';
+      settings.slug = resolvedPlace.slug || '';
       settings.live = true;
       settings.locationMode = 'auto';
       selectedPlace = true;
       applyCurrentZonedTime();
-      placeInput.value = settings.place;
+      placeInput.value = resolvedPlace.display_name || resolvedPlace.name;
       liveInput.checked = true;
       toggleLiveFields();
       if (!auto) showToast(state.ui.location_ready);
@@ -2485,7 +2660,7 @@ JS = r"""
     }
     settings.language = languageInput.value;
     settings.live = liveInput.checked;
-    if (selectedPlace && settings.place !== state.ui.current_location && settings.locationMode !== 'auto') settings.locationMode = 'manual';
+    if (selectedPlace && settings.locationMode !== 'auto') settings.locationMode = 'manual';
     if (settings.live) {
       applyCurrentZonedTime();
     } else {
@@ -2498,7 +2673,7 @@ JS = r"""
 
   function savePreferences() {
     try {
-      localStorage.setItem('panchang-preferences-v2', JSON.stringify({
+      localStorage.setItem('panchang-preferences-v3', JSON.stringify({
         place: settings.place, lat: settings.lat, lon: settings.lon, timezone: settings.timezone,
         country: settings.country, language: settings.language, slug: settings.slug || '',
         locationMode: settings.locationMode || 'manual'
@@ -2508,7 +2683,7 @@ JS = r"""
 
   function loadPreferences() {
     try {
-      const raw = localStorage.getItem('panchang-preferences-v2');
+      const raw = localStorage.getItem('panchang-preferences-v3') || localStorage.getItem('panchang-preferences-v2');
       return raw ? JSON.parse(raw) : null;
     } catch (_) {
       return null;
@@ -2573,7 +2748,7 @@ JS = r"""
 
   async function minuteRefresh() {
     if (document.visibilityState !== 'visible' || loading) return;
-    await refreshNow({manual: false, preserveScroll: true});
+    await refreshNow({preserveScroll: true});
   }
 
   function scheduleMinuteRefresh() {
@@ -2586,7 +2761,7 @@ JS = r"""
 
   window.addEventListener('resize', () => {
     fitHeaderText();
-    centerCurrentItems();
+    alignCurrentItems();
     suppressDayScroll = true;
     dayRail.scrollLeft = dayRail.clientWidth;
     window.setTimeout(() => { suppressDayScroll = false; }, 80);
@@ -2597,7 +2772,6 @@ JS = r"""
     if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); shiftDay(-1); }
     if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); shiftDay(1); }
     if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'e' && !dialog.open) openDialog();
-    if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'r' && !dialog.open) { event.preventDefault(); refreshNow({manual: true, preserveScroll: false}); }
     if (event.key === 'Escape' && dialog.open) closeDialog();
   });
 
@@ -4393,12 +4567,12 @@ FAVICON_B64 = (
 
 
 HTML_TEMPLATE = r"""<!doctype html>
-<html lang="{{ context.lang }}" dir="ltr">
+<html lang="{{ context.lang }}" dir="ltr" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#061923">
-  <meta name="color-scheme" content="dark">
+  <meta id="themeColor" name="theme-color" content="#f6f2ea">
+  <meta name="color-scheme" content="light dark">
   <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
   <meta name="googlebot" content="index,follow,max-image-preview:large,max-snippet:-1">
   <meta name="author" content="{{ app_name }}">
@@ -4406,7 +4580,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="apple-mobile-web-app-title" content="{{ app_name }}">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="format-detection" content="telephone=no">
   <meta name="description" content="{{ seo.description }}">
   <meta name="keywords" content="Panchang, Panchangam, {{ context.place }}, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, Muhurta, Lagna, sunrise, sunset">
@@ -4440,10 +4614,11 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="twitter:image" content="{{ seo.og_image }}">
   <meta name="twitter:image:alt" content="{{ seo.title }} — current Panchang timings">
 
+  <script nonce="{{ nonce }}">try{const t=localStorage.getItem('panchang-theme');document.documentElement.dataset.theme=t==='dark'?'dark':'light'}catch(_){document.documentElement.dataset.theme='light'}</script>
   <style nonce="{{ nonce }}">
   {{ css | safe }}
   .sr-only { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
-  .noscript-card { position:fixed; z-index:100; inset:auto 12px 12px; padding:10px 13px; border:1px solid rgba(255,198,92,.35); border-radius:12px; color:#fff; background:#10283a; font-size:12px; box-shadow:0 12px 40px rgba(0,0,0,.35); }
+  .noscript-card { position:fixed; z-index:100; inset:auto 12px 12px; padding:10px 13px; border:1px solid var(--line-strong); border-radius:12px; color:var(--text); background:var(--surface-strong); font-size:12px; box-shadow:var(--shadow); }
   </style>
   <script id="structuredData" type="application/ld+json" nonce="{{ nonce }}">{{ jsonld_json | safe }}</script>
 </head>
@@ -4466,15 +4641,18 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
       <div class="header-actions">
         <button class="header-control next-control" id="nextDayButton" type="button" aria-label="{{ data.ui.next_day }}" title="{{ data.ui.next_day }}">›</button>
-        <button class="header-control refresh-button" id="refreshButton" type="button" aria-label="{{ data.ui.refresh }}" title="{{ data.ui.auto_refresh }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
-        </button>
       </div>
       <span class="live-dot" id="liveIndicator"{% if not context.live %} hidden{% endif %}>{{ data.ui.live }}</span>
     </header>
 
     <div class="metrics" id="metrics" aria-live="polite" aria-busy="false">
       {% for section in data.sections %}
+      {% if section.reserved %}
+      <section class="metric-row reserved-row" data-section="reserved" aria-hidden="true">
+        <div class="reserved-label"></div>
+        <div class="reserved-space"></div>
+      </section>
+      {% else %}
       <section class="metric-row" data-section="{{ section.key }}" itemscope itemtype="https://schema.org/Observation">
         <div class="metric-label">
           <span class="metric-icon" aria-hidden="true">{{ section.icon }}</span>
@@ -4487,7 +4665,6 @@ HTML_TEMPLATE = r"""<!doctype html>
               <strong class="moment-title" itemprop="value">{{ item.title }}</strong>
               <time class="moment-time"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.time }}</time>
               <span class="badges">
-                {% if item.current %}<span class="badge now">{{ item.badge or data.ui.selected }}</span>{% endif %}
                 {% if item.quality == 'auspicious' %}<span class="badge good">{{ data.ui.good }}</span>{% endif %}
                 {% if item.quality == 'inauspicious' %}<span class="badge bad">{{ data.ui.avoid }}</span>{% endif %}
                 {% if item.detail and item.detail == data.ui.mixed %}<span class="badge neutral">{{ item.detail }}</span>{% endif %}
@@ -4497,6 +4674,7 @@ HTML_TEMPLATE = r"""<!doctype html>
           </div>
         </div>
       </section>
+      {% endif %}
       {% endfor %}
     </div>
   </main>
@@ -4536,6 +4714,20 @@ HTML_TEMPLATE = r"""<!doctype html>
           <select id="languageInput">
             {% for language in data.languages %}<option value="{{ language.code }}"{% if language.code == context.lang %} selected{% endif %}>{{ language.native }} — {{ language.name }}</option>{% endfor %}
           </select>
+        </div>
+
+        <div class="field theme-field">
+          <span class="field-label" data-i18n="appearance">{{ data.ui.appearance }}</span>
+          <div class="theme-toggle" role="group" aria-label="{{ data.ui.appearance }}">
+            <button class="theme-choice" type="button" data-theme-choice="light" aria-pressed="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+              <span data-i18n="light">{{ data.ui.light }}</span>
+            </button>
+            <button class="theme-choice" type="button" data-theme-choice="dark" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+              <span data-i18n="dark">{{ data.ui.dark }}</span>
+            </button>
+          </div>
         </div>
 
         <div class="switch-row">
@@ -4753,6 +4945,112 @@ def remote_place_results(query: str, lang: str) -> tuple[dict[str, Any], ...]:
     return tuple(output)
 
 
+
+def distance_km(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+    """Great-circle distance used to resolve common cities without a network call."""
+    radius = 6371.0088
+    lat_a = math.radians(latitude_a)
+    lat_b = math.radians(latitude_b)
+    delta_lat = lat_b - lat_a
+    delta_lon = math.radians(longitude_b - longitude_a)
+    hav = math.sin(delta_lat / 2) ** 2 + math.cos(lat_a) * math.cos(lat_b) * math.sin(delta_lon / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(hav), math.sqrt(max(0.0, 1.0 - hav)))
+
+
+def nearby_catalogue_place(latitude: float, longitude: float, maximum_km: float = 35.0) -> dict[str, Any] | None:
+    nearest: tuple[float, str, dict[str, Any]] | None = None
+    for slug, place in POPULAR_PLACES.items():
+        distance = distance_km(latitude, longitude, float(place["latitude"]), float(place["longitude"]))
+        if nearest is None or distance < nearest[0]:
+            nearest = (distance, slug, place)
+    if nearest is None or nearest[0] > maximum_km:
+        return None
+    _distance, slug, place = nearest
+    return {
+        "name": str(place["name"]),
+        "display_name": f"{place['name']}, {place.get('country', '')}".strip(", "),
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "country": str(place.get("country") or ""),
+        "slug": slug,
+        "source": "built-in",
+    }
+
+
+@lru_cache(maxsize=1024)
+def remote_reverse_place(latitude_key: int, longitude_key: int, lang: str) -> dict[str, Any]:
+    latitude = latitude_key / 10000.0
+    longitude = longitude_key / 10000.0
+    endpoint = os.getenv("REVERSE_GEOCODING_API_URL", "https://nominatim.openstreetmap.org/reverse")
+    params: dict[str, Any] = {
+        "format": "jsonv2",
+        "lat": f"{latitude:.4f}",
+        "lon": f"{longitude:.4f}",
+        "zoom": 10,
+        "addressdetails": 1,
+        "namedetails": 1,
+        "accept-language": lang if lang in LANGUAGES else "en",
+    }
+    contact = os.getenv("GEOCODING_CONTACT_EMAIL", "").strip()
+    if contact:
+        params["email"] = contact
+    response = requests.get(
+        endpoint,
+        params=params,
+        headers={"Accept": "application/json", "User-Agent": f"{APP_NAME}/{APP_VERSION} (+{site_root()})"},
+        timeout=(2.5, 7.0),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    address = payload.get("address") if isinstance(payload, dict) else {}
+    if not isinstance(address, dict):
+        address = {}
+    locality = next((str(address.get(key) or "").strip() for key in (
+        "city", "town", "village", "municipality", "borough", "suburb", "county", "state_district", "state"
+    ) if str(address.get(key) or "").strip()), "")
+    if not locality:
+        locality = str(payload.get("name") or "").strip()
+    if not locality:
+        raise ValueError("Reverse geocoder did not return a locality")
+    state_name = str(address.get("state") or address.get("region") or "").strip()
+    country = str(address.get("country") or "").strip()
+    pieces = [locality]
+    if state_name and normalized_search(state_name) != normalized_search(locality):
+        pieces.append(state_name)
+    if country and all(normalized_search(country) != normalized_search(piece) for piece in pieces):
+        pieces.append(country)
+    return {
+        "name": locality,
+        "display_name": ", ".join(pieces),
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "country": country,
+        "country_code": str(address.get("country_code") or "").upper(),
+        "slug": slugify_place(locality),
+        "source": "OpenStreetMap / Nominatim",
+    }
+
+
+def reverse_place_result(latitude: float, longitude: float, lang: str) -> dict[str, Any]:
+    local = nearby_catalogue_place(latitude, longitude)
+    if local:
+        return local
+    try:
+        return remote_reverse_place(round(latitude * 10000), round(longitude * 10000), lang)
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        app.logger.warning("Reverse geocoding unavailable", exc_info=app.debug)
+        coordinate_name = f"{latitude:.3f}, {longitude:.3f}"
+        return {
+            "name": coordinate_name,
+            "display_name": coordinate_name,
+            "latitude": round(latitude, 6),
+            "longitude": round(longitude, 6),
+            "country": "",
+            "slug": slugify_place(coordinate_name),
+            "source": "coordinates",
+        }
+
+
 def search_redirect_response() -> Response:
     query = re.sub(r"\s+", " ", (request.args.get("place") or request.args.get("q") or "").strip())[:100]
     if len(query) < 2:
@@ -4839,6 +5137,28 @@ def places_api() -> Response:
     return response
 
 
+@app.get("/api/reverse-place")
+def reverse_place_api() -> Response:
+    try:
+        latitude = float(request.args.get("lat", ""))
+        longitude = float(request.args.get("lon", ""))
+        if not math.isfinite(latitude) or not math.isfinite(longitude) or not (-89.8 <= latitude <= 89.8) or not (-180 <= longitude <= 180):
+            raise ValueError
+    except (TypeError, ValueError):
+        response = jsonify({"error": "Valid lat and lon query parameters are required."})
+        response.status_code = 400
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    lang = (request.args.get("lang") or "en").lower().split("-")[0]
+    if lang not in LANGUAGES:
+        lang = "en"
+    place = reverse_place_result(latitude, longitude, lang)
+    response = jsonify({"place": place})
+    response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    return response
+
+
 @app.get("/robots.txt")
 def robots_txt() -> Response:
     root = site_root()
@@ -4904,8 +5224,8 @@ def web_manifest() -> Response:
         "display": "standalone",
         "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
         "orientation": "any",
-        "background_color": "#04131c",
-        "theme_color": "#061923",
+        "background_color": "#fffdfa",
+        "theme_color": "#f6f2ea",
         "lang": "en-IN",
         "dir": "ltr",
         "categories": ["lifestyle", "utilities", "education"],
@@ -5087,61 +5407,65 @@ def _draw_social_sun(draw: Any, center: tuple[int, int], radius: int, color: tup
 
 
 def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
-    """Render a 1200×630 preview using the same live values and visual language as the page."""
+    """Render a bright 1200×630 preview using the page's default pastel theme."""
     if Image is None or ImageDraw is None or ImageFont is None:
         return base64.b64decode(OG_IMAGE_B64)
 
     width, height = 1200, 630
-    top_color = (4, 19, 28)
-    bottom_color = (7, 37, 51)
+    top_color = (255, 253, 248)
+    bottom_color = (238, 246, 243)
     canvas = Image.new("RGBA", (width, height), top_color + (255,))
     draw = ImageDraw.Draw(canvas)
     for y in range(height):
         draw.line((0, y, width, y), fill=_mix_rgb(top_color, bottom_color, y / max(1, height - 1)))
 
-    # Soft golden, cyan and lavender light fields mirror the application background.
     glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse((-280, -270, 460, 470), fill=(244, 189, 79, 74))
-    glow_draw.ellipse((880, -220, 1470, 380), fill=(105, 221, 234, 70))
-    glow_draw.ellipse((720, 440, 1360, 860), fill=(185, 180, 255, 42))
+    glow_draw.ellipse((-250, -260, 430, 430), fill=(91, 205, 174, 72))
+    glow_draw.ellipse((330, -330, 920, 300), fill=(255, 213, 88, 54))
+    glow_draw.ellipse((900, -210, 1480, 390), fill=(232, 111, 154, 55))
+    glow_draw.ellipse((760, 420, 1420, 890), fill=(103, 157, 222, 35))
     glow = glow.filter(ImageFilter.GaussianBlur(92)) if ImageFilter is not None else glow
     canvas = Image.alpha_composite(canvas, glow)
     draw = ImageDraw.Draw(canvas)
 
     margin = 34
     header_box = (margin, 24, width - margin, 148)
-    draw.rounded_rectangle(header_box, radius=31, fill=(12, 39, 52, 232), outline=(105, 221, 234, 104), width=2)
+    draw.rounded_rectangle(header_box, radius=31, fill=(255, 255, 255, 236), outline=(42, 50, 61, 30), width=2)
     icon_box = (54, 45, 134, 125)
-    draw.rounded_rectangle(icon_box, radius=24, fill=(244, 189, 79, 31), outline=(244, 189, 79, 118), width=2)
-    _draw_social_sun(draw, (94, 85), 14, (255, 209, 107, 255))
+    draw.rounded_rectangle(icon_box, radius=24, fill=(218, 246, 236, 255), outline=(22, 143, 121, 92), width=2)
+    _draw_social_sun(draw, (94, 85), 14, (205, 143, 15, 255))
 
     lang = context["lang"]
     title_text = tr(lang, "panchang")
     title_font = fit_social_font(draw, title_text, lang, 620, 49, 36, True)
-    draw.text((158, 43), title_text, font=title_font, fill=(246, 252, 255, 255))
+    draw.text((158, 43), title_text, font=title_font, fill=(22, 24, 32, 255))
 
     subtitle = f"{context['place']}  •  {format_date_label(context['date'], lang)}  •  {format_clock(context['at'])}"
     subtitle_font = fit_social_font(draw, subtitle, lang, 780, 27, 19, True)
     subtitle_text = truncate_social_text(draw, subtitle, subtitle_font, 780)
-    draw.text((158, 98), subtitle_text, font=subtitle_font, fill=(205, 227, 237, 255))
+    draw.text((158, 98), subtitle_text, font=subtitle_font, fill=(83, 91, 103, 255))
 
     live_text = tr(lang, "live") if context.get("social_live", context.get("live")) else tr(lang, "selected")
     live_font = social_font(lang, 16, True)
     live_width = social_text_width(draw, live_text, live_font)
     live_left = width - margin - live_width - 38
     live_box = (live_left, 45, width - margin - 16, 79)
-    draw.rounded_rectangle(live_box, radius=17, fill=(105, 221, 234, 235), outline=(184, 246, 249, 255), width=2)
-    draw.text((live_left + 19, 53), live_text, font=live_font, fill=(4, 31, 39, 255))
+    draw.rounded_rectangle(live_box, radius=17, fill=(201, 241, 228, 255), outline=(22, 143, 121, 95), width=1)
+    draw.text((live_left + 19, 53), live_text, font=live_font, fill=(18, 101, 84, 255))
 
     timezone_text = context["timezone"]
     timezone_font = social_font("en", 14, True)
     timezone_width = social_text_width(draw, timezone_text, timezone_font)
-    draw.text((width - margin - timezone_width - 16, 106), timezone_text, font=timezone_font, fill=(138, 180, 198, 255))
+    draw.text((width - margin - timezone_width - 16, 106), timezone_text, font=timezone_font, fill=(103, 111, 123, 255))
 
     accents = [
-        (99, 218, 194), (244, 189, 79), (241, 132, 170), (255, 158, 141), (117, 212, 225),
-        (255, 185, 127), (185, 180, 255), (115, 158, 232), (222, 128, 174), (98, 221, 180),
+        (207, 143, 13), (22, 143, 121), (216, 82, 130), (122, 102, 220), (226, 105, 85),
+        (204, 123, 32), (37, 141, 164), (108, 100, 216), (74, 118, 200),
+    ]
+    fills = [
+        (255, 244, 205), (220, 246, 237), (251, 224, 235), (232, 230, 255), (255, 229, 222),
+        (255, 238, 213), (221, 243, 246), (231, 229, 255), (225, 235, 252),
     ]
     card_gap_x = 16
     card_gap_y = 8
@@ -5149,7 +5473,8 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
     card_height = 76
     cards_top = 164
 
-    for index, section in enumerate(data["sections"][:10]):
+    visible_sections = [section for section in data["sections"] if not section.get("reserved")][:9]
+    for index, section in enumerate(visible_sections):
         column = index % 2
         row = index // 2
         x1 = margin + column * (card_width + card_gap_x)
@@ -5157,22 +5482,22 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
         x2 = x1 + card_width
         y2 = y1 + card_height
         accent = accents[index % len(accents)]
+        fill = fills[index % len(fills)]
         item = current_or_focused(section.get("items", []))
         quality = item.get("quality", "neutral") if item else "neutral"
         if quality == "auspicious":
-            fill = (13, 57, 52, 224)
-            border = (98, 221, 180, 165)
+            fill = (218, 247, 235)
+            border = (19, 135, 111, 205)
         elif quality == "inauspicious":
-            fill = (64, 36, 47, 224)
-            border = (255, 137, 149, 165)
+            fill = (255, 228, 235)
+            border = (200, 66, 97, 205)
         else:
-            fill = (18, 41, 54, 224)
-            border = accent + (128,)
+            border = accent + (155,)
 
-        draw.rounded_rectangle((x1, y1, x2, y2), radius=18, fill=fill, outline=border, width=2)
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=18, fill=fill + (246,), outline=border, width=2)
         draw.rounded_rectangle((x1 + 1, y1 + 1, x1 + 7, y2 - 1), radius=4, fill=accent + (255,))
         circle = (x1 + 17, y1 + 18, x1 + 55, y1 + 56)
-        draw.ellipse(circle, fill=accent + (32,), outline=accent + (145,), width=2)
+        draw.ellipse(circle, fill=accent + (24,), outline=accent + (120,), width=2)
         number_text = str(index + 1)
         number_font = social_font("en", 15, True)
         number_box = draw.textbbox((0, 0), number_text, font=number_font)
@@ -5187,45 +5512,42 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
         label = truncate_social_text(draw, label, label_font, 285)
         draw.text((label_x, y1 + 7), label, font=label_font, fill=accent + (255,))
 
-        badge_parts: list[str] = []
-        if item.get("current"):
-            badge_parts.append(str(item.get("badge") or tr(lang, "now")))
+        badge_text = ""
         if quality == "auspicious":
-            badge_parts.append(tr(lang, "good"))
+            badge_text = tr(lang, "good")
         elif quality == "inauspicious":
-            badge_parts.append(tr(lang, "avoid"))
-        badge_text = " · ".join(badge_parts[:2])
-        badge_reserved = 0
+            badge_text = tr(lang, "avoid")
         if badge_text:
-            badge_font = fit_social_font(draw, badge_text, lang, 175, 13, 10, True)
-            badge_text = truncate_social_text(draw, badge_text, badge_font, 175)
+            badge_font = fit_social_font(draw, badge_text, lang, 150, 13, 10, True)
+            badge_text = truncate_social_text(draw, badge_text, badge_font, 150)
             badge_width = social_text_width(draw, badge_text, badge_font) + 20
-            badge_reserved = badge_width + 10
-            badge_color = (98, 221, 180) if quality == "auspicious" else (255, 137, 149) if quality == "inauspicious" else (105, 221, 234)
+            badge_color = (19, 135, 111) if quality == "auspicious" else (200, 66, 97)
             badge_left = x2 - 13 - badge_width
-            draw.rounded_rectangle((badge_left, y1 + 7, x2 - 13, y1 + 29), radius=11, fill=badge_color + (47,), outline=badge_color + (155,), width=1)
-            draw.text((badge_left + 10, y1 + 11), badge_text, font=badge_font, fill=(239, 252, 255, 255))
+            draw.rounded_rectangle((badge_left, y1 + 6, x2 - 13, y1 + 30), radius=12, fill=badge_color + (255,))
+            badge_box = draw.textbbox((0, 0), badge_text, font=badge_font)
+            badge_y = y1 + 18 - (badge_box[3] - badge_box[1]) / 2 - badge_box[1]
+            draw.text((badge_left + 10, badge_y), badge_text, font=badge_font, fill=(255, 255, 255, 255))
 
         value = str(item.get("title", "—"))
         value_width = max(120, content_right - label_x)
         value_font = fit_social_font(draw, value, lang, value_width, 22, 16, True)
         value = truncate_social_text(draw, value, value_font, value_width)
-        draw.text((label_x, y1 + 27), value, font=value_font, fill=(247, 252, 255, 255))
+        draw.text((label_x, y1 + 27), value, font=value_font, fill=(24, 27, 35, 255))
 
         timing = str(item.get("time", ""))
         timing_font = fit_social_font(draw, timing, lang, value_width, 14, 10, False)
         timing = truncate_social_text(draw, timing, timing_font, value_width)
-        draw.text((label_x, y1 + 54), timing, font=timing_font, fill=(180, 208, 220, 255))
+        draw.text((label_x, y1 + 54), timing, font=timing_font, fill=(92, 99, 111, 255))
 
     footer_y = 596
-    draw.line((margin + 8, footer_y - 10, width - margin - 8, footer_y - 10), fill=(193, 225, 237, 38), width=1)
+    draw.line((margin + 8, footer_y - 10, width - margin - 8, footer_y - 10), fill=(53, 60, 70, 30), width=1)
     site_text = site_root().replace("https://", "").replace("http://", "").split("/")[0] or APP_NAME
     site_font = social_font("en", 15, True)
-    draw.text((margin + 8, footer_y), site_text, font=site_font, fill=(244, 205, 111, 255))
+    draw.text((margin + 8, footer_y), site_text, font=site_font, fill=(174, 115, 11, 255))
     footer_message = f"{TIMELINE_FUTURE_ITEMS}+ upcoming values in every timeline  •  tap to explore"
     footer_font = social_font("en", 15, True)
     footer_width = social_text_width(draw, footer_message, footer_font)
-    draw.text((width - margin - 8 - footer_width, footer_y), footer_message, font=footer_font, fill=(170, 215, 228, 255))
+    draw.text((width - margin - 8 - footer_width, footer_y), footer_message, font=footer_font, fill=(66, 116, 126, 255))
 
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
@@ -5294,7 +5616,7 @@ def openapi_document() -> Response:
                 "get": {
                     "operationId": "getPanchang",
                     "summary": "Get Panchang for a place, date and local time",
-                    "description": "Returns prior, active and at least 12 upcoming intervals for all ten visible Panchang elements.",
+                    "description": "Returns prior, active and at least 12 upcoming intervals for every Panchang timeline.",
                     "parameters": [
                         {"name": "place", "in": "query", "schema": {"type": "string", "default": "Ujjain"}},
                         {"name": "lat", "in": "query", "description": "Latitude; defaults to Ujjain", "schema": {"type": "number", "minimum": -89.8, "maximum": 89.8, "default": 23.1765}},
@@ -5325,6 +5647,18 @@ def openapi_document() -> Response:
                     "responses": {"200": {"description": "Matching places"}},
                 }
             },
+            "/api/reverse-place": {
+                "get": {
+                    "operationId": "reversePlace",
+                    "summary": "Resolve latitude and longitude to a city name",
+                    "parameters": [
+                        {"name": "lat", "in": "query", "required": True, "schema": {"type": "number", "minimum": -89.8, "maximum": 89.8}},
+                        {"name": "lon", "in": "query", "required": True, "schema": {"type": "number", "minimum": -180, "maximum": 180}},
+                        {"name": "lang", "in": "query", "schema": {"type": "string", "enum": language_enum, "default": "en"}},
+                    ],
+                    "responses": {"200": {"description": "Resolved city"}, "400": {"description": "Invalid coordinates"}},
+                }
+            },
         },
         "components": {
             "schemas": {
@@ -5349,6 +5683,7 @@ def openapi_document() -> Response:
                         "label": {"type": "string"},
                         "icon": {"type": "string"},
                         "items": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineItem"}},
+                        "reserved": {"type": "boolean", "description": "Empty presentation row"},
                     },
                 },
                 "PanchangResponse": {
