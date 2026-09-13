@@ -58,7 +58,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -707,6 +707,19 @@ def format_card_date_range(start: date, end: date, lang: str = "en") -> str:
     return f"{format_card_date(start, lang)} – {format_card_date(end, lang)}"
 
 
+def format_endpoint_display(value: datetime, lang: str = "en", include_year: bool = False) -> str:
+    """Compact date-and-time endpoint for a cross-day card."""
+    if lang == "en":
+        date_text = f"{value.day} {EN_MONTHS[value.month - 1]}"
+        if include_year:
+            date_text += f" {value.year}"
+    else:
+        date_text = f"{value.day:02d}-{value.month:02d}"
+        if include_year:
+            date_text += f"-{value.year}"
+    return f"{date_text} · {format_clock(value)}"
+
+
 def format_clock_range(start: datetime, end: datetime) -> str:
     """Format a readable range without repeating the same AM/PM marker."""
     offset_changes = start.utcoffset() != end.utcoffset()
@@ -938,11 +951,19 @@ def interval_item(
     current = instant_contains(start, at, end) if focus is None else focus
     date_text = format_card_date_range(start.date(), end.date(), lang)
     clock_text = format_clock_range(start, end)
+    endpoint_year = start.year != end.year
+    start_display = format_endpoint_display(start, lang, endpoint_year)
+    end_display = format_endpoint_display(end, lang, endpoint_year)
     return {
         "title": title,
         "date": date_text,
         "clock": clock_text,
-        "time": f"{date_text} · {clock_text}",
+        # A machine-readable and screen-reader-friendly representation that
+        # always binds each clock time to its own date.
+        "time": f"{start_display} → {end_display}",
+        "start_display": start_display,
+        "end_display": end_display,
+        "crosses_day": start.date() != end.date(),
         "start": iso_minute(start),
         "end": iso_minute(end),
         "current": bool(current),
@@ -958,7 +979,7 @@ def _timeline_widths(duration_minutes: int) -> tuple[int, int, int]:
     A complete civil day occupies one consistent visual span per viewport.
     Short periods retain a minimum width so their date and time remain
     readable, while all longer periods grow directly with their duration.
-    Cross-midnight intervals are split before this function is called.
+    Cross-midnight intervals remain intact and use their full real duration.
     """
     minutes = max(1, int(duration_minutes))
     desktop = max(176, min(1080, round(minutes * (1080 / 1440))))
@@ -981,59 +1002,76 @@ def _decorate_timeline_item(item: dict[str, Any], duration_minutes: int, day_key
     return decorated
 
 
-def split_timeline_at_midnights(items: list[dict[str, Any]], at: datetime, lang: str) -> list[dict[str, Any]]:
-    """Split cross-midnight periods so each civil day begins a new card."""
+def decorate_timeline_items(items: list[dict[str, Any]], at: datetime, lang: str) -> list[dict[str, Any]]:
+    """Decorate real Panchang intervals without inventing midnight boundaries.
+
+    Midnight is a civil-clock boundary, not a Tithi, Nakshatra, Yoga, Karana,
+    Choghadiya, Hora, Muhurta or Lagna transition.  Each calculated interval
+    therefore remains one card from its true start instant to its true end
+    instant.  Cross-day cards carry an explicit start date/time and end
+    date/time so users never have to guess which day a clock value belongs to.
+    """
     result: list[dict[str, Any]] = []
     local_tz = at.tzinfo
+
     for item in items:
-        # Daily sunrise/sunset and unavailable cards already represent a whole
-        # civil date and should remain one readable card.
+        # Daily sunrise/sunset and unavailable cards intentionally represent a
+        # complete civil date rather than an interval transition.
         if item.get("fixed_day_card") or not item.get("start") or not item.get("end"):
             day_key = str(item.get("day_key") or at.date().isoformat())
             duration = int(item.get("duration_minutes") or 1440)
-            result.append(_decorate_timeline_item(item, duration, day_key, bool(item.get("starts_day", True))))
+            fixed = dict(item)
+            fixed.setdefault("crosses_day", False)
+            fixed.setdefault("start_display", "")
+            fixed.setdefault("end_display", "")
+            result.append(_decorate_timeline_item(
+                fixed,
+                duration,
+                day_key,
+                bool(item.get("starts_day", True)),
+            ))
             continue
 
         try:
             start = datetime.fromisoformat(str(item["start"])).astimezone(local_tz)
             end = datetime.fromisoformat(str(item["end"])).astimezone(local_tz)
         except (TypeError, ValueError):
-            result.append(_decorate_timeline_item(item, 240, at.date().isoformat(), False))
+            fallback = dict(item)
+            fallback.setdefault("crosses_day", False)
+            fallback.setdefault("start_display", "")
+            fallback.setdefault("end_display", "")
+            result.append(_decorate_timeline_item(fallback, 240, at.date().isoformat(), False))
             continue
 
+        duration = max(1, int(round((end.timestamp() - start.timestamp()) / 60.0)))
         if end.timestamp() <= start.timestamp():
-            result.append(_decorate_timeline_item(item, 1, start.date().isoformat(), False))
-            continue
+            duration = 1
 
-        cursor = start
-        segment_number = 0
-        while cursor.timestamp() < end.timestamp() - 0.5:
-            next_midnight = datetime.combine(cursor.date() + timedelta(days=1), dt_time.min, tzinfo=local_tz)
-            segment_end = end if end.timestamp() <= next_midnight.timestamp() else next_midnight
-            duration = max(1, int(round((segment_end.timestamp() - cursor.timestamp()) / 60.0)))
-            segment = dict(item)
-            segment_date = format_card_date(cursor.date(), lang)
-            segment_clock = format_clock_range(cursor, segment_end)
-            segment.update({
-                "date": segment_date,
-                "clock": segment_clock,
-                "time": f"{segment_date} · {segment_clock}",
-                "start": iso_minute(cursor),
-                "end": iso_minute(segment_end),
-                "current": instant_contains(cursor, at, segment_end),
-                "continues_previous": segment_number > 0,
-                "continues_next": segment_end.timestamp() < end.timestamp() - 0.5,
-            })
-            result.append(_decorate_timeline_item(
-                segment,
-                duration,
-                cursor.date().isoformat(),
-                cursor.hour == 0 and cursor.minute == 0,
-            ))
-            cursor = segment_end
-            segment_number += 1
+        decorated = dict(item)
+        endpoint_year = start.year != end.year
+        start_display = format_endpoint_display(start, lang, endpoint_year)
+        end_display = format_endpoint_display(end, lang, endpoint_year)
+        decorated.update({
+            "date": format_card_date_range(start.date(), end.date(), lang),
+            "clock": format_clock_range(start, end),
+            "time": f"{start_display} → {end_display}",
+            "start_display": start_display,
+            "end_display": end_display,
+            "crosses_day": start.date() != end.date(),
+            "start": iso_minute(start),
+            "end": iso_minute(end),
+            "current": instant_contains(start, at, end),
+            "continues_previous": False,
+            "continues_next": False,
+        })
+        result.append(_decorate_timeline_item(
+            decorated,
+            duration,
+            start.date().isoformat(),
+            False,
+        ))
+
     return result
-
 
 def make_category_timeline(kind: str, at: datetime, latitude: float, longitude: float, lang: str, before: int = TIMELINE_PAST_ITEMS, after: int = TIMELINE_FUTURE_ITEMS) -> list[dict[str, Any]]:
     current_index = category_index(kind, at, latitude, longitude)
@@ -1514,7 +1552,7 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         section_model("lagna", tr(lang, "lagna"), make_category_timeline("lagna", at, lat, lon, lang)),
     ]
     for section in sections:
-        section["items"] = split_timeline_at_midnights(section["items"], at, lang)
+        section["items"] = decorate_timeline_items(section["items"], at, lang)
 
     summary = {section["key"]: current_or_focused(section["items"]) for section in sections}
     sun_focus = current_or_focused(sun_items)
@@ -2937,6 +2975,8 @@ body {
 .moment-meta { grid-column: 1; }
 .moment-date { font-weight: 420; }
 .moment-time { font-weight: 510; }
+.moment-endpoint { overflow: visible; text-overflow: clip; white-space: nowrap; }
+.moment-endpoint-end { color: var(--muted); }
 .badges { display: none !important; }
 .live-dot { font-weight: 650; }
 .fab::after { font-weight: 520; }
@@ -3269,21 +3309,24 @@ JS = r"""
     ].filter(Boolean).join(' ');
     const currentAttr = item.current ? ' aria-current="true"' : '';
     const datetimeAttr = item.start ? ` datetime="${escapeHtml(item.start)}"` : '';
+    const endDatetimeAttr = item.end ? ` datetime="${escapeHtml(item.end)}"` : '';
     const dateText = item.date || '';
     const clockText = item.clock || item.time || '';
+    const crossesDay = Boolean(item.crosses_day && item.start_display && item.end_display);
+    const timingMarkup = crossesDay
+      ? `<time class="moment-date moment-endpoint"${datetimeAttr}>${escapeHtml(item.start_display)}</time><time class="moment-time moment-endpoint moment-endpoint-end"${endDatetimeAttr}>→ ${escapeHtml(item.end_display)}</time>`
+      : `<span class="moment-date">${escapeHtml(dateText)}</span><time class="moment-time"${datetimeAttr}>${escapeHtml(clockText)}</time>`;
     const width = Math.max(1, Number(item.width_px) || 280);
     const mobileWidth = Math.max(1, Number(item.mobile_width_px) || width);
     const landscapeWidth = Math.max(1, Number(item.landscape_width_px) || width);
     const duration = Math.max(1, Number(item.duration_minutes) || 1);
     const style = `--duration-width:${width}px;--duration-width-mobile:${mobileWidth}px;--duration-width-landscape:${landscapeWidth}px`;
-    const aria = `${item.title}. ${dateText}. ${clockText}. ${item.quality === 'auspicious' ? state.ui.good : item.quality === 'inauspicious' ? state.ui.avoid : ''}`;
+    const ariaTiming = item.time || `${dateText}. ${clockText}`;
+    const aria = `${item.title}. ${ariaTiming}. ${item.quality === 'auspicious' ? state.ui.good : item.quality === 'inauspicious' ? state.ui.avoid : ''}`;
     return `
       <article class="${classes}" style="${style}" data-duration-minutes="${duration}" data-day-key="${escapeHtml(item.day_key || '')}" role="listitem"${currentAttr} aria-label="${escapeHtml(aria)}">
         <span class="moment-title" itemprop="value">${escapeHtml(item.title)}</span>
-        <span class="moment-meta">
-          <span class="moment-date">${escapeHtml(dateText)}</span>
-          <time class="moment-time"${datetimeAttr}>${escapeHtml(clockText)}</time>
-        </span>
+        <span class="moment-meta">${timingMarkup}</span>
       </article>`;
   }
 
@@ -5994,11 +6037,16 @@ HTML_TEMPLATE = r"""<!doctype html>
           <div class="timeline-wrap">
             <div class="timeline" tabindex="0" role="list" aria-label="{{ section.label }} — {{ data.ui.timeline_hint }}">
               {% for item in section["items"] %}
-              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}{% if item.starts_day %} starts-day{% endif %}" style="--duration-width:{{ item.width_px }}px;--duration-width-mobile:{{ item.mobile_width_px }}px;--duration-width-landscape:{{ item.landscape_width_px }}px" data-duration-minutes="{{ item.duration_minutes }}" data-day-key="{{ item.day_key }}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.date }}. {{ item.clock }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
+              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}{% if item.starts_day %} starts-day{% endif %}" style="--duration-width:{{ item.width_px }}px;--duration-width-mobile:{{ item.mobile_width_px }}px;--duration-width-landscape:{{ item.landscape_width_px }}px" data-duration-minutes="{{ item.duration_minutes }}" data-day-key="{{ item.day_key }}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.time }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
                 <span class="moment-title" itemprop="value">{{ item.title }}</span>
                 <span class="moment-meta">
+                  {% if item.crosses_day and item.start_display and item.end_display %}
+                  <time class="moment-date moment-endpoint"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.start_display }}</time>
+                  <time class="moment-time moment-endpoint moment-endpoint-end"{% if item.end %} datetime="{{ item.end }}"{% endif %}>→ {{ item.end_display }}</time>
+                  {% else %}
                   <span class="moment-date">{{ item.date }}</span>
                   <time class="moment-time"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.clock }}</time>
+                  {% endif %}
                 </span>
               </article>
               {% endfor %}
@@ -7097,11 +7145,12 @@ def render_social_image(context: dict[str, Any], data: dict[str, Any]) -> bytes:
         value_size = fit_social_size(draw, value, lang, card_width - 40, 25, 17, True)
         draw_social_mixed(draw, (x1 + 20, y1 + 44), value, lang, value_size, True, ink, card_width - 40)
 
-        card_date = str(item.get("date", "") if item else "")
+        crosses_day = bool(item and item.get("crosses_day") and item.get("start_display") and item.get("end_display"))
+        card_date = str(item.get("start_display", "") if crosses_day else item.get("date", "") if item else "")
         date_size = fit_social_size(draw, card_date, lang, card_width - 40, 14, 10, True)
         draw_social_mixed(draw, (x1 + 20, y1 + 88), card_date, lang, date_size, True, muted, card_width - 40)
 
-        clock = str(item.get("clock", item.get("time", "")) if item else "")
+        clock = str(("→ " + item.get("end_display", "")) if crosses_day else item.get("clock", item.get("time", "")) if item else "")
         clock_size = fit_social_size(draw, clock, lang, card_width - 40, 15, 10, False)
         draw_social_mixed(draw, (x1 + 20, y1 + 111), clock, lang, clock_size, False, muted, card_width - 40)
 
