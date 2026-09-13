@@ -5,3 +5,6 @@ pyswisseph==2.10.3.2
 requests==2.34.2
 indic-transliteration==2.3.82
 Pillow==12.3.0
+pywebpush==2.5.0
+cryptography==50.0.1
+psycopg[binary]==3.3.5
