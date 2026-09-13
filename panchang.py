@@ -7256,7 +7256,15 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="abstract" content="{{ seo["copy"] }}">
   <meta name="keywords" content="{{ seo.keywords }}">
   <script nonce="{{ nonce }}">try{document.documentElement.dataset.theme=localStorage.getItem('panchang-theme')==='dark'?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}</script>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-QECHKT2KS4"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
 
+  gtag('config', 'G-QECHKT2KS4');
+</script>
   <title>{{ seo.title }}</title>
   <link rel="canonical" href="{{ seo.canonical }}">
   {% for code, href in seo.alternates.items() %}<link rel="alternate" hreflang="{{ code }}" href="{{ href }}">
