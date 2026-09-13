@@ -58,7 +58,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.8.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -3051,6 +3051,84 @@ body {
   .share-preview-frame { max-width: 230px; }
 }
 
+
+/* ------------------------------------------------------------------------
+   Celestial masthead: one confident, modern anchor for the Panchang
+   ------------------------------------------------------------------------ */
+:root {
+  --header-start: #29386f;
+  --header-mid: #4057a5;
+  --header-end: #28727a;
+  --header-text: #fbfdff;
+  --header-muted: rgba(247, 250, 255, .74);
+  --header-control-bg: rgba(255, 255, 255, .13);
+  --header-control-hover: rgba(255, 255, 255, .22);
+  --header-control-line: rgba(255, 255, 255, .30);
+  --header-live: #c9fff1;
+}
+html[data-theme="dark"] {
+  --header-start: #171f43;
+  --header-mid: #273b73;
+  --header-end: #18545c;
+  --header-text: #fbfdff;
+  --header-muted: rgba(237, 243, 255, .70);
+  --header-control-bg: rgba(255, 255, 255, .11);
+  --header-control-hover: rgba(255, 255, 255, .18);
+  --header-control-line: rgba(255, 255, 255, .24);
+  --header-live: #bdf7e8;
+}
+.day-carousel,
+html[data-theme="dark"] .day-carousel {
+  color: var(--header-text);
+  border-color: rgba(50, 67, 125, .30);
+  background:
+    radial-gradient(48% 230% at 2% 50%, rgba(248, 195, 83, .20), transparent 61%),
+    radial-gradient(44% 220% at 100% 50%, rgba(137, 230, 224, .15), transparent 64%),
+    linear-gradient(112deg, var(--header-start) 0%, var(--header-mid) 52%, var(--header-end) 100%);
+  box-shadow: 0 12px 30px rgba(37, 48, 91, .20), inset 0 1px 0 rgba(255,255,255,.14);
+}
+.day-carousel::before {
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.035), transparent 28%, transparent 72%, rgba(255,255,255,.035)),
+    radial-gradient(38% 180% at 22% 50%, rgba(255,255,255,.055), transparent 72%);
+}
+.day-carousel::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: auto 10% 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent);
+}
+.day-carousel .day-title {
+  color: var(--header-text);
+  text-shadow: 0 1px 2px rgba(9, 16, 43, .24);
+}
+.day-carousel .day-panel[data-position="previous"] .day-title,
+.day-carousel .day-panel[data-position="next"] .day-title {
+  color: var(--header-muted);
+}
+.header-control,
+html[data-theme="dark"] .header-control {
+  color: #ffffff;
+  border-color: var(--header-control-line);
+  background: var(--header-control-bg);
+  box-shadow: 0 7px 18px rgba(9, 18, 49, .19), inset 0 1px 0 rgba(255,255,255,.20);
+  backdrop-filter: blur(12px) saturate(115%);
+}
+.header-control:hover,
+html[data-theme="dark"] .header-control:hover {
+  color: #ffffff;
+  border-color: rgba(255,255,255,.48);
+  background: var(--header-control-hover);
+}
+.live-dot,
+html[data-theme="dark"] .live-dot { color: var(--header-live); }
+.live-dot::before {
+  box-shadow: 0 0 0 4px rgba(201, 255, 241, .15);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
@@ -3100,6 +3178,9 @@ JS = r"""
   let toastTimer = 0;
   let lastDataFetch = Date.now();
   let lastLiveMinute = '';
+  let lastDataMinute = `${settings.date}T${settings.time}`;
+  let minuteRefreshTimer = 0;
+  let minuteRefreshRetryTimer = 0;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3166,7 +3247,7 @@ JS = r"""
     document.documentElement.style.colorScheme = normalized;
     const themeColor = $('meta[name="theme-color"]');
     const colorScheme = $('meta[name="color-scheme"]');
-    if (themeColor) themeColor.content = normalized === 'dark' ? '#0e1421' : '#f2f4f9';
+    if (themeColor) themeColor.content = normalized === 'dark' ? '#1b294f' : '#35498f';
     if (colorScheme) colorScheme.content = normalized;
     updateThemeToggle();
     if (persist) {
@@ -3438,12 +3519,14 @@ JS = r"""
       lat: String(settings.lat),
       lon: String(settings.lon),
       tz: settings.timezone,
-      date: settings.date,
       lang: settings.language,
       live: settings.live ? '1' : '0',
       _: String(Date.now())
     });
-    if (!settings.live) params.set('time', settings.time);
+    if (!settings.live) {
+      params.set('date', settings.date);
+      params.set('time', settings.time);
+    }
     if (settings.country) params.set('country', settings.country);
     return `/api/panchang?${params.toString()}`;
   }
@@ -3454,7 +3537,10 @@ JS = r"""
 
   async function fetchPanchang(direction = 0, historyMode = 'push', {timelineState = null, showMask = true} = {}) {
     if (loading) return false;
-    if (settings.live) applyCurrentZonedTime({updateDate: settings.followToday});
+    if (settings.live) {
+      settings.followToday = true;
+      applyCurrentZonedTime({updateDate: true});
+    }
     liveInput.checked = settings.live;
     loading = true;
     const locationMode = settings.locationMode || 'server';
@@ -3496,6 +3582,7 @@ JS = r"""
         ], {duration: 190, easing: 'cubic-bezier(.2,.8,.2,1)'});
       }
       lastDataFetch = Date.now();
+      lastDataMinute = `${settings.date}T${settings.time}`;
       savePreferences();
       updateHistory(historyMode);
       return true;
@@ -3538,7 +3625,10 @@ JS = r"""
   async function refreshNow({manual = false, preserveScroll = true} = {}) {
     if (loading) return false;
     const timelineState = preserveScroll ? captureTimelineState() : null;
-    if (settings.live) applyCurrentZonedTime({updateDate: settings.followToday});
+    if (settings.live) {
+      settings.followToday = true;
+      applyCurrentZonedTime({updateDate: true});
+    }
     const ok = await fetchPanchang(0, 'replace', {timelineState, showMask: manual});
     if (ok && manual) showToast(state.ui.refreshed);
     return ok;
@@ -3876,17 +3966,37 @@ JS = r"""
     fitHeaderText();
   }
 
-  async function minuteRefresh() {
-    if (!settings.live || document.visibilityState !== 'visible' || loading) return;
-    await refreshNow({manual: false, preserveScroll: true});
+  function currentZonedMinuteKey() {
+    const parts = getZonedParts(settings.timezone);
+    return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}T${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+  }
+
+  async function minuteRefresh({force = false} = {}) {
+    if (!settings.live || document.visibilityState !== 'visible') return false;
+    if (loading) {
+      window.clearTimeout(minuteRefreshRetryTimer);
+      minuteRefreshRetryTimer = window.setTimeout(() => minuteRefresh({force: true}), 1200);
+      return false;
+    }
+    const minuteKey = currentZonedMinuteKey();
+    if (!force && minuteKey === lastDataMinute) return true;
+    settings.followToday = true;
+    applyCurrentZonedTime({updateDate: true});
+    if (dialog.open && liveInput.checked) {
+      dateInput.value = settings.date;
+      timeInput.value = settings.time;
+      updateOgPreview();
+    }
+    return refreshNow({manual: false, preserveScroll: true});
   }
 
   function scheduleMinuteRefresh() {
-    const firstDelay = 60000 - (Date.now() % 60000) + 900;
-    window.setTimeout(() => {
-      minuteRefresh();
-      window.setInterval(minuteRefresh, 60000);
-    }, firstDelay);
+    window.clearTimeout(minuteRefreshTimer);
+    const delay = 60000 - (Date.now() % 60000) + 350;
+    minuteRefreshTimer = window.setTimeout(async () => {
+      await minuteRefresh({force: true});
+      scheduleMinuteRefresh();
+    }, delay);
   }
 
   window.addEventListener('resize', () => {
@@ -3968,15 +4078,20 @@ JS = r"""
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && Date.now() - lastDataFetch >= 60000) minuteRefresh();
+    if (document.visibilityState !== 'visible') return;
+    scheduleMinuteRefresh();
+    if (settings.live && (Date.now() - lastDataFetch >= 55000 || currentZonedMinuteKey() !== lastDataMinute)) {
+      minuteRefresh({force: true});
+    }
   });
 
   // A browser may restore the page from its back-forward cache without a new
   // HTTP request. Recalculate immediately so every visible reload/resume uses
-  // the current local minute rather than a stale snapshot.
+  // the current local date and minute rather than a stale snapshot.
   window.addEventListener('pageshow', event => {
-    if (settings.live && (event.persisted || Date.now() - lastDataFetch >= 60000)) {
-      refreshNow({manual: false, preserveScroll: false});
+    scheduleMinuteRefresh();
+    if (settings.live && (event.persisted || Date.now() - lastDataFetch >= 55000 || currentZonedMinuteKey() !== lastDataMinute)) {
+      minuteRefresh({force: true});
     }
   });
 
@@ -5787,7 +5902,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta charset="utf-8">
   <meta name="google-adsense-account" content="ca-pub-4357913188792813">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f2f4f9">
+  <meta name="theme-color" content="#35498f">
   <meta name="color-scheme" content="light">
   <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
   <meta name="googlebot" content="index,follow,max-image-preview:large,max-snippet:-1">
@@ -6525,7 +6640,7 @@ def web_manifest() -> Response:
         "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
         "orientation": "any",
         "background_color": "#f2f4f9",
-        "theme_color": "#f2f4f9",
+        "theme_color": "#35498f",
         "lang": "en-IN",
         "dir": "ltr",
         "categories": ["lifestyle", "utilities", "education"],
