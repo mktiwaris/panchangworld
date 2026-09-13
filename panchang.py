@@ -58,7 +58,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.1"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -127,7 +127,7 @@ EN_TEXT = {
     "date": "Date",
     "time": "Time",
     "language": "Language",
-    "live_time": "Keep time live",
+    "live_time": "Keep date live",
     "use_location": "Use my location",
     "apply": "Show Panchang",
     "cancel": "Cancel",
@@ -310,6 +310,23 @@ THEME_TEXT: dict[str, dict[str, str]] = {
 }
 for _language_code, _theme_values in THEME_TEXT.items():
     TEXT_OVERRIDES.setdefault(_language_code, {}).update(_theme_values)
+
+LIVE_MODE_TEXT: dict[str, str] = {
+    "hi": "दिनांक लाइव रखें",
+    "mr": "दिनांक लाइव्ह ठेवा",
+    "gu": "તારીખ લાઇવ રાખો",
+    "bn": "তারিখ লাইভ রাখুন",
+    "ta": "தேதியை நேரலையில் வைத்திரு",
+    "te": "తేదీని లైవ్‌గా ఉంచండి",
+    "kn": "ದಿನಾಂಕವನ್ನು ಲೈವ್ ಇರಿಸಿ",
+    "ml": "തീയതി തത്സമയം നിലനിർത്തുക",
+    "pa": "ਤਾਰੀਖ ਲਾਈਵ ਰੱਖੋ",
+    "or": "ତାରିଖକୁ ଲାଇଭ୍ ରଖନ୍ତୁ",
+    "ne": "मिति लाइभ राख्नुहोस्",
+    "sa": "दिनाङ्कं सजीवं स्थापयतु",
+}
+for _language_code, _live_label in LIVE_MODE_TEXT.items():
+    TEXT_OVERRIDES.setdefault(_language_code, {})["live_time"] = _live_label
 
 
 SHARE_TEXT: dict[str, dict[str, str]] = {
@@ -567,12 +584,11 @@ def resolve_context(
     *,
     allow_snapshot_time: bool = False,
 ) -> dict[str, Any]:
-    """Resolve a request using the current local clock.
+    """Resolve a live or user-selected Panchang instant.
 
-    The interactive website and JSON API are permanently live: old ``time`` or
-    ``live=0`` parameters from previously shared links are intentionally
-    ignored. Only the Open Graph renderer may opt into an explicit minute so a
-    crawler receives the same snapshot advertised in the page metadata.
+    Live mode is the default. When ``live=0`` is supplied, the requested date
+    and ``time=HH:MM`` are honoured so the edit form can freeze a calculation.
+    The Open Graph renderer may always use its explicit snapshot minute.
     """
     lang = detect_language(path_lang)
     known = POPULAR_PLACES.get(place_slug or "", DEFAULT_PLACE)
@@ -582,7 +598,9 @@ def resolve_context(
     tz_name, tz = safe_timezone(request.args.get("tz"), str(known["timezone"]))
     now = datetime.now(tz).replace(second=0, microsecond=0)
     selected_date = safe_date(date_str or request.args.get("date"), now.date())
-    raw_time = request.args.get("time") if allow_snapshot_time else None
+    raw_live = (request.args.get("live") or "1").strip().lower()
+    live = raw_live not in {"0", "false", "off", "no"}
+    raw_time = request.args.get("time") if (allow_snapshot_time or not live) else None
     selected_time = safe_time(raw_time, now.timetz().replace(tzinfo=None)) if raw_time else now.timetz().replace(tzinfo=None)
     selected_at = datetime.combine(selected_date, selected_time, tzinfo=tz)
     # ZoneInfo accepts nonexistent wall times during a DST jump. Round-tripping
@@ -603,7 +621,7 @@ def resolve_context(
         "date": selected_date,
         "time": selected_time,
         "at": selected_at,
-        "live": True,
+        "live": live,
         "country": country,
         "slug": slugify_place(place_name or known["name"]),
     }
@@ -690,9 +708,19 @@ def format_card_date_range(start: date, end: date, lang: str = "en") -> str:
 
 
 def format_clock_range(start: datetime, end: datetime) -> str:
+    """Format a readable range without repeating the same AM/PM marker."""
     offset_changes = start.utcoffset() != end.utcoffset()
-    start_clock = f"{format_clock(start)} {start.tzname() or ''}".strip() if offset_changes else format_clock(start)
-    end_clock = f"{format_clock(end)} {end.tzname() or ''}".strip() if offset_changes else format_clock(end)
+    if offset_changes:
+        start_clock = f"{format_clock(start)} {start.tzname() or ''}".strip()
+        end_clock = f"{format_clock(end)} {end.tzname() or ''}".strip()
+        return f"{start_clock} – {end_clock}"
+
+    start_clock = format_clock(start)
+    end_clock = format_clock(end)
+    start_meridiem = start_clock.rsplit(" ", 1)[-1]
+    end_meridiem = end_clock.rsplit(" ", 1)[-1]
+    if start_meridiem == end_meridiem:
+        start_clock = start_clock.rsplit(" ", 1)[0]
     return f"{start_clock} – {end_clock}"
 
 
@@ -924,6 +952,89 @@ def interval_item(
     }
 
 
+def _timeline_widths(duration_minutes: int) -> tuple[int, int, int]:
+    """Map elapsed minutes to a readable visual timeline.
+
+    A complete civil day occupies one consistent visual span per viewport.
+    Short periods retain a minimum width so their date and time remain
+    readable, while all longer periods grow directly with their duration.
+    Cross-midnight intervals are split before this function is called.
+    """
+    minutes = max(1, int(duration_minutes))
+    desktop = max(176, min(1080, round(minutes * (1080 / 1440))))
+    mobile = max(182, min(760, round(minutes * (760 / 1440))))
+    landscape = max(160, min(900, round(minutes * (900 / 1440))))
+    return desktop, mobile, landscape
+
+
+def _decorate_timeline_item(item: dict[str, Any], duration_minutes: int, day_key: str, starts_day: bool) -> dict[str, Any]:
+    decorated = dict(item)
+    desktop, mobile, landscape = _timeline_widths(duration_minutes)
+    decorated.update({
+        "duration_minutes": duration_minutes,
+        "width_px": desktop,
+        "mobile_width_px": mobile,
+        "landscape_width_px": landscape,
+        "day_key": day_key,
+        "starts_day": bool(starts_day),
+    })
+    return decorated
+
+
+def split_timeline_at_midnights(items: list[dict[str, Any]], at: datetime, lang: str) -> list[dict[str, Any]]:
+    """Split cross-midnight periods so each civil day begins a new card."""
+    result: list[dict[str, Any]] = []
+    local_tz = at.tzinfo
+    for item in items:
+        # Daily sunrise/sunset and unavailable cards already represent a whole
+        # civil date and should remain one readable card.
+        if item.get("fixed_day_card") or not item.get("start") or not item.get("end"):
+            day_key = str(item.get("day_key") or at.date().isoformat())
+            duration = int(item.get("duration_minutes") or 1440)
+            result.append(_decorate_timeline_item(item, duration, day_key, bool(item.get("starts_day", True))))
+            continue
+
+        try:
+            start = datetime.fromisoformat(str(item["start"])).astimezone(local_tz)
+            end = datetime.fromisoformat(str(item["end"])).astimezone(local_tz)
+        except (TypeError, ValueError):
+            result.append(_decorate_timeline_item(item, 240, at.date().isoformat(), False))
+            continue
+
+        if end.timestamp() <= start.timestamp():
+            result.append(_decorate_timeline_item(item, 1, start.date().isoformat(), False))
+            continue
+
+        cursor = start
+        segment_number = 0
+        while cursor.timestamp() < end.timestamp() - 0.5:
+            next_midnight = datetime.combine(cursor.date() + timedelta(days=1), dt_time.min, tzinfo=local_tz)
+            segment_end = end if end.timestamp() <= next_midnight.timestamp() else next_midnight
+            duration = max(1, int(round((segment_end.timestamp() - cursor.timestamp()) / 60.0)))
+            segment = dict(item)
+            segment_date = format_card_date(cursor.date(), lang)
+            segment_clock = format_clock_range(cursor, segment_end)
+            segment.update({
+                "date": segment_date,
+                "clock": segment_clock,
+                "time": f"{segment_date} · {segment_clock}",
+                "start": iso_minute(cursor),
+                "end": iso_minute(segment_end),
+                "current": instant_contains(cursor, at, segment_end),
+                "continues_previous": segment_number > 0,
+                "continues_next": segment_end.timestamp() < end.timestamp() - 0.5,
+            })
+            result.append(_decorate_timeline_item(
+                segment,
+                duration,
+                cursor.date().isoformat(),
+                cursor.hour == 0 and cursor.minute == 0,
+            ))
+            cursor = segment_end
+            segment_number += 1
+    return result
+
+
 def make_category_timeline(kind: str, at: datetime, latitude: float, longitude: float, lang: str, before: int = TIMELINE_PAST_ITEMS, after: int = TIMELINE_FUTURE_ITEMS) -> list[dict[str, Any]]:
     current_index = category_index(kind, at, latitude, longitude)
     current_start = find_category_boundary(kind, at, -1, latitude, longitude)
@@ -1068,6 +1179,10 @@ def make_sunrise_sunset_timeline(
             "badge": "",
             "sunrise_time": sunrise_text,
             "sunset_time": sunset_text,
+            "duration_minutes": 1440,
+            "day_key": day.isoformat(),
+            "starts_day": True,
+            "fixed_day_card": True,
         })
     return items
 
@@ -1148,6 +1263,10 @@ def unavailable_timeline(at: datetime, lang: str) -> list[dict[str, Any]]:
             "quality": "neutral",
             "detail": "",
             "badge": tr(lang, "selected") if offset == 0 else "",
+            "duration_minutes": 1440,
+            "day_key": day.isoformat(),
+            "starts_day": True,
+            "fixed_day_card": True,
         })
     return items
 
@@ -1394,6 +1513,8 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         section_model("period", tr(lang, "period"), make_period_timeline(at, lat, lon, tz_name, lang)),
         section_model("lagna", tr(lang, "lagna"), make_category_timeline("lagna", at, lat, lon, lang)),
     ]
+    for section in sections:
+        section["items"] = split_timeline_at_midnights(section["items"], at, lang)
 
     summary = {section["key"]: current_or_focused(section["items"]) for section in sections}
     sun_focus = current_or_focused(sun_items)
@@ -2652,6 +2773,284 @@ html:lang(kn) .moment-title, html:lang(ml) .moment-title, html:lang(pa) .moment-
   line-height: 1.24; padding-top: .12em; padding-bottom: .04em;
 }
 
+/* ------------------------------------------------------------------------
+   Refined interaction and typography pass
+   ------------------------------------------------------------------------ */
+:root {
+  --moment-min: 132px;
+  --moment-max: 980px;
+}
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Noto Sans", "Noto Sans Devanagari", "Noto Sans Gujarati", "Noto Sans Bengali",
+    "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Malayalam",
+    "Noto Sans Gurmukhi", "Noto Sans Oriya", "Noto Sans Odia", "Nirmala UI", sans-serif;
+  font-weight: 400;
+  letter-spacing: -.006em;
+}
+.day-title { font-weight: 680; letter-spacing: -.032em; }
+.metric-label h2 { font-weight: 620; letter-spacing: -.014em; }
+.moment {
+  flex: 0 0 clamp(var(--moment-min), var(--duration-width, 280px), var(--moment-max));
+  border-width: 1px;
+}
+.moment.starts-day:not(:first-child) { margin-inline-start: clamp(6px, .65vw, 12px); }
+.moment.starts-day:not(:first-child)::after {
+  content: "";
+  position: absolute;
+  inset-block: 10%;
+  inset-inline-start: calc(-1 * clamp(4px, .40vw, 7px));
+  width: 1px;
+  background: var(--line-strong);
+}
+.moment-title {
+  font-weight: 650;
+  letter-spacing: -.012em;
+}
+.moment-date { font-weight: 480; }
+.moment-time { font-weight: 560; }
+.badge { font-weight: 700; letter-spacing: .035em; }
+.live-dot { font-weight: 700; }
+.fab::after { font-weight: 560; }
+
+.settings-sheet {
+  width: min(92vw, 520px);
+  max-height: min(92dvh, 740px);
+  border-radius: 20px;
+}
+.settings-form { max-height: min(92dvh, 740px); }
+.sheet-head { gap: 10px; padding: 11px 14px 11px 16px; }
+.sheet-head h2 { font-size: clamp(17px, 3.4vw, 20px); font-weight: 650; letter-spacing: -.018em; }
+.icon-button { width: 34px; font-size: 20px; }
+.sheet-body { padding: 12px 16px 14px; gap: 10px; }
+.field { gap: 5px; }
+.field > label, .field-label {
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: .018em;
+  text-transform: none;
+}
+.theme-toggle-button {
+  justify-self: start;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 620;
+}
+.theme-toggle-button:hover { border-color: var(--accent); }
+.theme-toggle-button .theme-glyph { font-size: 15px; }
+.input-shell input, .field input, .field select {
+  height: 42px;
+  border-radius: 10px;
+  padding-inline: 11px;
+  font-size: 14px;
+  font-weight: 440;
+}
+.field select {
+  background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px;
+  background-size: 5px 5px;
+  padding-right: 34px;
+}
+.place-results { gap: 4px; margin-top: 4px; max-height: 164px; border-radius: 10px; }
+.place-result { min-height: 42px; gap: 8px; border-radius: 9px; padding: 7px 10px; }
+.place-main { font-size: 13px; font-weight: 580; }
+.place-sub { font-size: 11px; }
+.form-grid { gap: 9px; }
+.switch-row { min-height: 38px; padding: 1px 0; }
+.switch-row > label { font-size: 13px; font-weight: 580; }
+.switch { width: 44px; height: 24px; }
+.switch input { pointer-events: auto; cursor: pointer; }
+.switch-track { cursor: pointer; }
+.switch-track::after { width: 18px; height: 18px; left: 2px; top: 2px; }
+.switch input:checked + .switch-track::after { transform: translateX(20px); }
+.location-button { min-height: 42px; border-radius: 10px; font-size: 14px; font-weight: 620; }
+.share-preview { margin: 0; gap: 0; }
+.share-preview-frame { border-radius: 11px; box-shadow: 0 7px 20px rgba(40,48,78,.08); }
+.sheet-actions { gap: 8px; padding: 10px 16px 12px; }
+.action-button { min-height: 42px; border-radius: 10px; font-size: 14px; font-weight: 650; }
+
+@media (max-width: 560px) {
+  :root { --moment-min: 154px; --moment-max: 690px; }
+  .moment { flex-basis: clamp(var(--moment-min), var(--duration-width-mobile, 250px), var(--moment-max)); }
+  .settings-sheet { width: min(94vw, 500px); max-height: 94dvh; }
+  .settings-form { max-height: 94dvh; }
+  .sheet-body { padding-inline: 13px; }
+  .sheet-actions { padding-inline: 13px; }
+}
+
+@media (orientation: landscape) and (max-height: 480px) {
+  :root { --moment-min: 148px; --moment-max: 760px; }
+  .moment { flex-basis: clamp(var(--moment-min), var(--duration-width-landscape, 250px), var(--moment-max)); }
+  .settings-sheet { width: min(86vw, 620px); max-height: 96dvh; }
+  .settings-form { max-height: 96dvh; }
+  .sheet-head { padding-block: 7px; }
+  .sheet-body { padding-block: 8px; gap: 7px; }
+  .input-shell input, .field input, .field select { height: 36px; }
+  .location-button, .action-button { min-height: 36px; }
+  .share-preview-frame { max-width: 330px; justify-self: center; }
+}
+
+/* ------------------------------------------------------------------------
+   Pro readability pass: modern weights, true duration cues, compact editor
+   ------------------------------------------------------------------------ */
+:root {
+  --moment-min: 176px;
+  --moment-max: 1080px;
+}
+body {
+  font-family: "Segoe UI Variable Text", "Aptos", Inter, ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    "Noto Sans Devanagari", "Noto Sans Gujarati", "Noto Sans Bengali",
+    "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada",
+    "Noto Sans Malayalam", "Noto Sans Gurmukhi", "Noto Sans Oriya",
+    "Noto Sans Odia", "Nirmala UI", sans-serif;
+  font-weight: 400;
+  letter-spacing: -.004em;
+  text-rendering: optimizeLegibility;
+}
+.day-title {
+  font-weight: 610;
+  letter-spacing: -.027em;
+}
+.metric-label h2 {
+  font-weight: 560;
+  letter-spacing: -.009em;
+}
+.moment {
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
+  max-width: none;
+}
+.moment-title {
+  grid-column: 1;
+  font-weight: 590;
+  letter-spacing: -.008em;
+}
+.moment-meta { grid-column: 1; }
+.moment-date { font-weight: 420; }
+.moment-time { font-weight: 510; }
+.badges { display: none !important; }
+.live-dot { font-weight: 650; }
+.fab::after { font-weight: 520; }
+
+.settings-sheet {
+  width: min(91vw, 455px);
+  max-height: min(94dvh, 690px);
+  border-radius: 17px;
+}
+.settings-form { max-height: min(94dvh, 690px); }
+.sheet-head {
+  gap: 8px;
+  padding: 9px 11px 9px 14px;
+}
+.sheet-head h2 {
+  font-size: clamp(16px, 3vw, 18px);
+  font-weight: 590;
+  letter-spacing: -.012em;
+}
+.icon-button { width: 32px; font-size: 19px; }
+.sheet-body {
+  padding: 9px 13px 10px;
+  gap: 7px;
+}
+.field { gap: 4px; }
+.field > label, .field-label {
+  font-size: 11.5px;
+  line-height: 1.28;
+  font-weight: 560;
+  letter-spacing: .006em;
+}
+.theme-toggle-button {
+  min-height: 30px;
+  gap: 6px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 560;
+}
+.theme-toggle-button .theme-glyph { font-size: 13px; }
+.input-shell input, .field input, .field select {
+  height: 38px;
+  border-radius: 9px;
+  padding-inline: 10px;
+  font-size: 13.5px;
+  font-weight: 400;
+}
+.field select {
+  background-position: calc(100% - 16px) 16px, calc(100% - 11px) 16px;
+  padding-right: 32px;
+}
+.form-grid { gap: 7px; }
+.switch-row {
+  min-height: 34px;
+  gap: 10px;
+  padding: 0;
+}
+.switch-row > label {
+  font-size: 12.5px;
+  line-height: 1.3;
+  font-weight: 540;
+}
+.switch { width: 40px; height: 22px; }
+.switch-track::after { width: 16px; height: 16px; left: 2px; top: 2px; }
+.switch input:checked + .switch-track::after { transform: translateX(18px); }
+.location-button {
+  min-height: 38px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 560;
+}
+.share-preview-frame {
+  width: min(100%, 292px);
+  justify-self: center;
+  border-radius: 9px;
+  box-shadow: 0 5px 16px rgba(40,48,78,.07);
+}
+.sheet-actions {
+  gap: 7px;
+  padding: 8px 13px 10px;
+}
+.action-button {
+  min-height: 38px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 580;
+}
+
+@media (max-width: 560px) {
+  :root { --moment-min: 182px; --moment-max: 760px; }
+  .moment {
+    flex-basis: clamp(var(--moment-min), var(--duration-width-mobile, 250px), var(--moment-max));
+    max-width: none;
+  }
+  .settings-sheet { width: min(92vw, 455px); max-height: 94dvh; }
+  .settings-form { max-height: 94dvh; }
+  .sheet-body { padding-inline: 12px; }
+  .sheet-actions { padding-inline: 12px; }
+}
+
+@media (orientation: landscape) and (max-height: 480px) {
+  :root { --moment-min: 160px; --moment-max: 900px; }
+  .moment {
+    flex-basis: clamp(var(--moment-min), var(--duration-width-landscape, 250px), var(--moment-max));
+    max-width: none;
+  }
+  .settings-sheet { width: min(82vw, 520px); max-height: 96dvh; }
+  .settings-form { max-height: 96dvh; }
+  .sheet-head { padding-block: 6px; }
+  .sheet-body { padding-block: 6px; gap: 5px; }
+  .input-shell input, .field input, .field select { height: 32px; }
+  .location-button, .action-button { min-height: 32px; }
+  .share-preview-frame { max-width: 230px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
@@ -2677,7 +3076,7 @@ JS = r"""
     date: state.query.date,
     time: state.query.time,
     language: state.query.language,
-    live: true,
+    live: state.query.live !== false,
     theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
     country: state.query.country || '',
     locationMode: 'server'
@@ -2726,7 +3125,7 @@ JS = r"""
   const liveIndicator = $('#liveIndicator');
   const ldJsonNode = $('#structuredData');
   const ogPreviewImage = $('#ogPreviewImage');
-  const themeInputs = $$('input[name="theme"]');
+  const themeToggleButton = $('#themeToggleButton');
 
   const cssEscape = window.CSS && typeof window.CSS.escape === 'function'
     ? window.CSS.escape.bind(window.CSS)
@@ -2750,6 +3149,16 @@ JS = r"""
     toastTimer = window.setTimeout(() => toastNode.classList.remove('show'), 3200);
   }
 
+  function updateThemeToggle() {
+    if (!themeToggleButton) return;
+    const isDark = settings.theme === 'dark';
+    const label = isDark ? state.ui.dark_theme : state.ui.light_theme;
+    const glyph = isDark ? '◐' : '☀';
+    themeToggleButton.innerHTML = `<span class="theme-glyph" aria-hidden="true">${glyph}</span><span>${escapeHtml(label)}</span>`;
+    themeToggleButton.setAttribute('aria-label', `${state.ui.appearance}: ${label}`);
+    themeToggleButton.setAttribute('aria-pressed', String(isDark));
+  }
+
   function applyTheme(theme, {persist = true} = {}) {
     const normalized = theme === 'dark' ? 'dark' : 'light';
     settings.theme = normalized;
@@ -2759,46 +3168,41 @@ JS = r"""
     const colorScheme = $('meta[name="color-scheme"]');
     if (themeColor) themeColor.content = normalized === 'dark' ? '#0e1421' : '#f2f4f9';
     if (colorScheme) colorScheme.content = normalized;
-    themeInputs.forEach(input => { input.checked = input.value === normalized; });
+    updateThemeToggle();
     if (persist) {
       try { localStorage.setItem('panchang-theme', normalized); } catch (_) { /* Storage is optional. */ }
     }
   }
 
-  themeInputs.forEach(input => input.addEventListener('change', () => {
-    if (input.checked) applyTheme(input.value);
-  }));
-
-  function qualityBadge(item) {
-    if (item.quality === 'auspicious') return `<span class="badge good">${escapeHtml(state.ui.good)}</span>`;
-    if (item.quality === 'inauspicious') return `<span class="badge bad">${escapeHtml(state.ui.avoid)}</span>`;
-    return '';
-  }
+  themeToggleButton?.addEventListener('click', () => {
+    applyTheme(settings.theme === 'dark' ? 'light' : 'dark');
+  });
 
   function renderMoment(item) {
-    const badges = [];
-    const qBadge = qualityBadge(item);
-    if (qBadge) badges.push(qBadge);
-    if (item.detail && item.detail === state.ui.mixed) badges.push(`<span class="badge neutral">${escapeHtml(item.detail)}</span>`);
     const classes = [
       'moment',
       item.quality || 'neutral',
       item.detail && item.detail === state.ui.mixed ? 'mixed' : '',
-      item.current ? 'is-current' : ''
+      item.current ? 'is-current' : '',
+      item.starts_day ? 'starts-day' : ''
     ].filter(Boolean).join(' ');
     const currentAttr = item.current ? ' aria-current="true"' : '';
     const datetimeAttr = item.start ? ` datetime="${escapeHtml(item.start)}"` : '';
     const dateText = item.date || '';
     const clockText = item.clock || item.time || '';
+    const width = Math.max(1, Number(item.width_px) || 280);
+    const mobileWidth = Math.max(1, Number(item.mobile_width_px) || width);
+    const landscapeWidth = Math.max(1, Number(item.landscape_width_px) || width);
+    const duration = Math.max(1, Number(item.duration_minutes) || 1);
+    const style = `--duration-width:${width}px;--duration-width-mobile:${mobileWidth}px;--duration-width-landscape:${landscapeWidth}px`;
     const aria = `${item.title}. ${dateText}. ${clockText}. ${item.quality === 'auspicious' ? state.ui.good : item.quality === 'inauspicious' ? state.ui.avoid : ''}`;
     return `
-      <article class="${classes}" role="listitem"${currentAttr} aria-label="${escapeHtml(aria)}">
-        <strong class="moment-title" itemprop="value">${escapeHtml(item.title)}</strong>
+      <article class="${classes}" style="${style}" data-duration-minutes="${duration}" data-day-key="${escapeHtml(item.day_key || '')}" role="listitem"${currentAttr} aria-label="${escapeHtml(aria)}">
+        <span class="moment-title" itemprop="value">${escapeHtml(item.title)}</span>
         <span class="moment-meta">
           <span class="moment-date">${escapeHtml(dateText)}</span>
           <time class="moment-time"${datetimeAttr}>${escapeHtml(clockText)}</time>
         </span>
-        <span class="badges">${badges.join('')}</span>
       </article>`;
   }
 
@@ -2894,7 +3298,7 @@ JS = r"""
       fitHeaderText();
       window.setTimeout(() => { suppressDayScroll = false; }, 90);
     });
-    liveIndicator.hidden = false;
+    liveIndicator.hidden = !settings.live;
   }
 
   function fitHeaderText() {
@@ -2929,17 +3333,21 @@ JS = r"""
     previousDayButton.setAttribute('aria-label', state.ui.previous_day);
     nextDayButton.setAttribute('aria-label', state.ui.next_day);
     liveIndicator.textContent = state.ui.live;
+    updateThemeToggle();
   }
 
   function previewImageUrl() {
     const language = languageInput?.value || settings.language || 'en';
-    const selectedDate = dateInput?.value || settings.date;
+    const isLive = liveInput?.checked ?? settings.live;
     const parts = getZonedParts(settings.timezone);
-    const liveTime = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
-    const snapshot = `${selectedDate.replaceAll('-', '')}${liveTime.replace(':', '')}`;
+    const currentDate = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+    const currentTime = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+    const selectedDate = isLive ? currentDate : (dateInput?.value || settings.date);
+    const selectedTime = isLive ? currentTime : (timeInput?.value || settings.time || currentTime);
+    const snapshot = `${selectedDate.replaceAll('-', '')}${selectedTime.replace(':', '')}`;
     const params = new URLSearchParams({
       place: settings.place, lat: String(settings.lat), lon: String(settings.lon), tz: settings.timezone,
-      date: selectedDate, time: liveTime, lang: language, v: state.app?.version || '1'
+      date: selectedDate, time: selectedTime, lang: language, live: isLive ? '1' : '0', v: state.app?.version || '1'
     });
     if (settings.country) params.set('country', settings.country);
     return `/og/${encodeURIComponent(language)}/${snapshot}.png?${params.toString()}`;
@@ -3032,9 +3440,10 @@ JS = r"""
       tz: settings.timezone,
       date: settings.date,
       lang: settings.language,
-      live: '1',
+      live: settings.live ? '1' : '0',
       _: String(Date.now())
     });
+    if (!settings.live) params.set('time', settings.time);
     if (settings.country) params.set('country', settings.country);
     return `/api/panchang?${params.toString()}`;
   }
@@ -3045,9 +3454,8 @@ JS = r"""
 
   async function fetchPanchang(direction = 0, historyMode = 'push', {timelineState = null, showMask = true} = {}) {
     if (loading) return false;
-    settings.live = true;
-    applyCurrentZonedTime({updateDate: settings.followToday});
-    liveInput.checked = true;
+    if (settings.live) applyCurrentZonedTime({updateDate: settings.followToday});
+    liveInput.checked = settings.live;
     loading = true;
     const locationMode = settings.locationMode || 'server';
     metrics.classList.add('is-busy');
@@ -3074,9 +3482,9 @@ JS = r"""
         date: state.query.date,
         time: state.query.time,
         language: state.query.language,
-        live: true,
+        live: state.query.live !== false,
         theme: settings.theme,
-        followToday: settings.followToday,
+        followToday: state.query.live !== false ? settings.followToday : false,
         country: state.query.country || '',
         locationMode
       };
@@ -3110,8 +3518,9 @@ JS = r"""
     if (!state.seo?.canonical) return;
     const target = new URL(state.seo.canonical, location.origin);
     const params = target.searchParams;
-    params.delete('time');
-    params.set('live', '1');
+    params.set('live', settings.live ? '1' : '0');
+    if (settings.live) params.delete('time');
+    else params.set('time', settings.time);
     const localUrl = `${target.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
     const method = mode === 'replace' ? 'replaceState' : 'pushState';
     history[method]({panchang: true}, '', localUrl);
@@ -3120,16 +3529,16 @@ JS = r"""
   async function shiftDay(direction) {
     if (loading || ![-1, 1].includes(direction)) return;
     settings.date = addDays(settings.date, direction);
-    settings.live = true;
+    if (settings.live) applyCurrentZonedTime({updateDate: false});
+    settings.live = false;
     settings.followToday = false;
-    applyCurrentZonedTime({updateDate: false});
     await fetchPanchang(direction, 'push');
   }
 
   async function refreshNow({manual = false, preserveScroll = true} = {}) {
     if (loading) return false;
     const timelineState = preserveScroll ? captureTimelineState() : null;
-    applyCurrentZonedTime({updateDate: settings.followToday});
+    if (settings.live) applyCurrentZonedTime({updateDate: settings.followToday});
     const ok = await fetchPanchang(0, 'replace', {timelineState, showMask: manual});
     if (ok && manual) showToast(state.ui.refreshed);
     return ok;
@@ -3174,33 +3583,43 @@ JS = r"""
     dateInput.value = settings.date;
     timeInput.value = settings.time;
     languageInput.value = settings.language;
-    liveInput.checked = true;
-    liveInput.disabled = true;
-    liveInput.setAttribute('aria-checked', 'true');
-    liveInput.setAttribute('aria-disabled', 'true');
-    themeInputs.forEach(input => { input.checked = input.value === settings.theme; });
-    toggleLiveFields();
+    liveInput.checked = Boolean(settings.live);
+    updateThemeToggle();
+    toggleLiveFields({syncNow: false});
     placeResults.innerHTML = '';
     selectedPlace = true;
     updateOgPreview();
   }
 
-  function toggleLiveFields() {
-    liveInput.checked = true;
-    liveInput.disabled = true;
-    liveInput.setAttribute('aria-checked', 'true');
-    liveInput.setAttribute('aria-disabled', 'true');
-    settings.live = true;
-    dateInput.disabled = false;
-    timeInput.disabled = true;
-    timeInput.setAttribute('aria-disabled', 'true');
+  function toggleLiveFields({syncNow = true} = {}) {
+    settings.live = Boolean(liveInput.checked);
+    liveInput.setAttribute('aria-checked', String(settings.live));
+    dateInput.disabled = settings.live;
+    timeInput.disabled = settings.live;
+    dateInput.setAttribute('aria-disabled', String(settings.live));
+    timeInput.setAttribute('aria-disabled', String(settings.live));
+    if (settings.live) {
+      settings.followToday = true;
+      if (syncNow) applyCurrentZonedTime({updateDate: true});
+      dateInput.value = settings.date;
+      timeInput.value = settings.time;
+      lastLiveMinute = '';
+    } else {
+      settings.followToday = false;
+      settings.date = dateInput.value || settings.date;
+      settings.time = timeInput.value || settings.time;
+    }
+    liveIndicator.hidden = !settings.live;
+    updateOgPreview();
   }
 
   editButton.addEventListener('click', openDialog);
   closeButton.addEventListener('click', closeDialog);
   cancelButton.addEventListener('click', closeDialog);
   languageInput.addEventListener('change', () => { settings.language = languageInput.value; updateOgPreview(); });
-  dateInput.addEventListener('change', updateOgPreview);
+  dateInput.addEventListener('change', () => { if (!liveInput.checked) settings.date = dateInput.value; updateOgPreview(); });
+  timeInput.addEventListener('change', () => { if (!liveInput.checked) settings.time = timeInput.value; updateOgPreview(); });
+  liveInput.addEventListener('change', () => toggleLiveFields({syncNow: true}));
   dialog.addEventListener('click', event => {
     if (event.target === dialog) closeDialog();
   });
@@ -3331,14 +3750,15 @@ JS = r"""
       settings.place = detected?.name || detected?.city || `${settings.lat.toFixed(2)}, ${settings.lon.toFixed(2)}`;
       settings.country = detected?.country || '';
       settings.slug = detected?.slug || '';
-      settings.live = true;
       settings.locationMode = 'auto';
-      settings.followToday = true;
       selectedPlace = true;
-      applyCurrentZonedTime();
+      if (settings.live) {
+        settings.followToday = true;
+        applyCurrentZonedTime();
+      }
       placeInput.value = settings.place;
-      liveInput.checked = true;
-      toggleLiveFields();
+      liveInput.checked = settings.live;
+      toggleLiveFields({syncNow: false});
       updateOgPreview();
       if (!auto) showToast(state.ui.location_ready);
       if (fetchImmediately) await fetchPanchang(0, 'replace');
@@ -3364,12 +3784,15 @@ JS = r"""
       }
     }
     settings.language = languageInput.value;
-    settings.live = true;
-    settings.date = dateInput.value || settings.date;
-    const todayParts = getZonedParts(settings.timezone);
-    const todayIso = `${todayParts.year}-${String(todayParts.month).padStart(2, '0')}-${String(todayParts.day).padStart(2, '0')}`;
-    settings.followToday = settings.date === todayIso;
-    applyCurrentZonedTime({updateDate: settings.followToday});
+    settings.live = Boolean(liveInput.checked);
+    if (settings.live) {
+      settings.followToday = true;
+      applyCurrentZonedTime({updateDate: true});
+    } else {
+      settings.date = dateInput.value || settings.date;
+      settings.time = timeInput.value || settings.time;
+      settings.followToday = false;
+    }
     if (selectedPlace && settings.locationMode !== 'auto') settings.locationMode = 'manual';
     closeDialog();
     await fetchPanchang(0, 'push');
@@ -3445,11 +3868,16 @@ JS = r"""
       if (fullNode) fullNode.textContent = values[index].full;
       if (compactNode) compactNode.textContent = values[index].compact;
     });
+    if (dialog.open && liveInput.checked) {
+      dateInput.value = settings.date;
+      timeInput.value = settings.time;
+      updateOgPreview();
+    }
     fitHeaderText();
   }
 
   async function minuteRefresh() {
-    if (document.visibilityState !== 'visible' || loading) return;
+    if (!settings.live || document.visibilityState !== 'visible' || loading) return;
     await refreshNow({manual: false, preserveScroll: true});
   }
 
@@ -3547,7 +3975,7 @@ JS = r"""
   // HTTP request. Recalculate immediately so every visible reload/resume uses
   // the current local minute rather than a stale snapshot.
   window.addEventListener('pageshow', event => {
-    if (event.persisted || Date.now() - lastDataFetch >= 60000) {
+    if (settings.live && (event.persisted || Date.now() - lastDataFetch >= 60000)) {
       refreshNow({manual: false, preserveScroll: false});
     }
   });
@@ -5451,16 +5879,11 @@ HTML_TEMPLATE = r"""<!doctype html>
           <div class="timeline-wrap">
             <div class="timeline" tabindex="0" role="list" aria-label="{{ section.label }} — {{ data.ui.timeline_hint }}">
               {% for item in section["items"] %}
-              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.date }}. {{ item.clock }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
-                <strong class="moment-title" itemprop="value">{{ item.title }}</strong>
+              <article class="moment {{ item.quality }}{% if item.detail and item.detail == data.ui.mixed %} mixed{% endif %}{% if item.current %} is-current{% endif %}{% if item.starts_day %} starts-day{% endif %}" style="--duration-width:{{ item.width_px }}px;--duration-width-mobile:{{ item.mobile_width_px }}px;--duration-width-landscape:{{ item.landscape_width_px }}px" data-duration-minutes="{{ item.duration_minutes }}" data-day-key="{{ item.day_key }}" role="listitem"{% if item.current %} aria-current="true"{% endif %} aria-label="{{ item.title }}. {{ item.date }}. {{ item.clock }}{% if item.quality == 'auspicious' %}. {{ data.ui.good }}{% elif item.quality == 'inauspicious' %}. {{ data.ui.avoid }}{% elif item.detail and item.detail == data.ui.mixed %}. {{ item.detail }}{% endif %}">
+                <span class="moment-title" itemprop="value">{{ item.title }}</span>
                 <span class="moment-meta">
                   <span class="moment-date">{{ item.date }}</span>
                   <time class="moment-time"{% if item.start %} datetime="{{ item.start }}"{% endif %}>{{ item.clock }}</time>
-                </span>
-                <span class="badges">
-                  {% if item.quality == 'auspicious' %}<span class="badge good">{{ data.ui.good }}</span>{% endif %}
-                  {% if item.quality == 'inauspicious' %}<span class="badge bad">{{ data.ui.avoid }}</span>{% endif %}
-                  {% if item.detail and item.detail == data.ui.mixed %}<span class="badge neutral">{{ item.detail }}</span>{% endif %}
                 </span>
               </article>
               {% endfor %}
@@ -5499,19 +5922,16 @@ HTML_TEMPLATE = r"""<!doctype html>
         <button class="icon-button" id="closeDialog" type="button" aria-label="{{ data.ui.close }}">×</button>
       </div>
       <div class="sheet-body">
-        <fieldset class="theme-field">
-          <legend data-i18n="appearance">{{ data.ui.appearance }}</legend>
-          <div class="theme-options">
-            <div class="theme-option">
-              <input id="themeLight" name="theme" type="radio" value="light" checked>
-              <label for="themeLight"><span class="theme-glyph" aria-hidden="true">☀</span><span data-i18n="light_theme">{{ data.ui.light_theme }}</span></label>
-            </div>
-            <div class="theme-option">
-              <input id="themeDark" name="theme" type="radio" value="dark">
-              <label for="themeDark"><span class="theme-glyph" aria-hidden="true">◐</span><span data-i18n="dark_theme">{{ data.ui.dark_theme }}</span></label>
-            </div>
-          </div>
-        </fieldset>
+        <button class="theme-toggle-button" id="themeToggleButton" type="button" aria-label="{{ data.ui.appearance }}: {{ data.ui.light_theme }}" aria-pressed="false">
+          <span class="theme-glyph" aria-hidden="true">☀</span><span>{{ data.ui.light_theme }}</span>
+        </button>
+
+        <div class="field">
+          <label for="languageInput" data-i18n="language">{{ data.ui.language }}</label>
+          <select id="languageInput">
+            {% for language in data.languages %}<option value="{{ language.code }}"{% if language.code == context.lang %} selected{% endif %}>{{ language.native }} — {{ language.name }}</option>{% endfor %}
+          </select>
+        </div>
 
         <div class="field">
           <label for="placeInput" data-i18n="place">{{ data.ui.place }}</label>
@@ -5524,40 +5944,25 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="form-grid">
           <div class="field">
             <label for="dateInput" data-i18n="date">{{ data.ui.date }}</label>
-            <input id="dateInput" type="date" min="1600-01-01" max="2400-12-31" value="{{ context.date.isoformat() }}">
+            <input id="dateInput" type="date" min="1600-01-01" max="2400-12-31" value="{{ context.date.isoformat() }}"{% if context.live %} disabled{% endif %} aria-disabled="{{ 'true' if context.live else 'false' }}">
           </div>
           <div class="field">
             <label for="timeInput" data-i18n="time">{{ data.ui.time }}</label>
-            <input id="timeInput" type="time" step="60" value="{{ context.time.strftime('%H:%M') }}" disabled aria-disabled="true">
+            <input id="timeInput" type="time" step="60" value="{{ context.time.strftime('%H:%M') }}"{% if context.live %} disabled{% endif %} aria-disabled="{{ 'true' if context.live else 'false' }}">
           </div>
-        </div>
-
-        <div class="field">
-          <label for="languageInput" data-i18n="language">{{ data.ui.language }}</label>
-          <select id="languageInput">
-            {% for language in data.languages %}<option value="{{ language.code }}"{% if language.code == context.lang %} selected{% endif %}>{{ language.native }} — {{ language.name }}</option>{% endfor %}
-          </select>
         </div>
 
         <div class="switch-row">
           <label for="liveInput" data-i18n="live_time">{{ data.ui.live_time }}</label>
-          <div class="switch-locked">
-            <span class="switch-state" data-i18n="live">{{ data.ui.live }}</span>
-            <label class="switch" aria-label="{{ data.ui.live_time }}">
-              <input id="liveInput" type="checkbox" checked disabled tabindex="-1" aria-checked="true" aria-disabled="true" aria-readonly="true">
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
-          </div>
+          <label class="switch" aria-label="{{ data.ui.live_time }}">
+            <input id="liveInput" type="checkbox"{% if context.live %} checked{% endif %} aria-checked="{{ 'true' if context.live else 'false' }}">
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
         </div>
 
         <button class="location-button" id="locationButton" type="button" data-i18n="use_location">{{ data.ui.use_location }}</button>
-        <p class="sheet-note">{{ data.ui.calculation_note }}</p>
-        <p class="sheet-note">{{ data.ui.geocode_attribution }}</p>
-        <figure class="share-preview">
-          <figcaption>
-            <strong data-i18n="share_preview">{{ data.ui.share_preview }}</strong>
-            <span data-i18n="share_preview_help">{{ data.ui.share_preview_help }}</span>
-          </figcaption>
+
+        <figure class="share-preview" aria-label="{{ data.ui.share_image_alt }}">
           <div class="share-preview-frame">
             <img id="ogPreviewImage" src="{{ seo.og_image }}" alt="{{ seo.image_alt }}" width="1200" height="630" loading="eager" decoding="async">
           </div>
