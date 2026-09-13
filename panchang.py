@@ -5956,7 +5956,6 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="format-detection" content="telephone=no">
-  <meta name="google-adsense-account" content="ca-pub-4357913188792813">
   <meta name="description" content="{{ seo.description }}">
   <meta name="keywords" content="Panchang, Panchangam, {{ context.place }}, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, Muhurta, Lagna, sunrise, sunset">
   <script nonce="{{ nonce }}">try{document.documentElement.dataset.theme=localStorage.getItem('panchang-theme')==='dark'?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}</script>
