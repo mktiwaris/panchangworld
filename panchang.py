@@ -86,7 +86,26 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
+
+# All public, shareable and crawler-facing URLs use the custom domain.  Render's
+# temporary hostname is intentionally never exposed in canonical, Open Graph,
+# sitemap or browser-share URLs.  PUBLIC_SITE_URL can override this for another
+# production domain; SITE_URL remains supported for existing deployments.
+def _configured_public_site_url() -> str:
+    raw = (os.getenv("PUBLIC_SITE_URL") or os.getenv("SITE_URL") or "https://panchangworld.com").strip().rstrip("/")
+    if not re.match(r"^https?://", raw, flags=re.IGNORECASE):
+        raw = f"https://{raw}"
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower()
+    if not host or host.endswith(".onrender.com"):
+        return "https://panchangworld.com"
+    scheme = "https" if host not in {"localhost", "127.0.0.1", "::1"} else (parsed.scheme or "http")
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{scheme}://{host}{port}"
+
+
+PUBLIC_SITE_URL = _configured_public_site_url()
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -112,8 +131,7 @@ PUSH_VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").replace("\\n", "\n")
 PUSH_VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
 PUSH_VAPID_SUBJECT = (
     os.getenv("VAPID_SUBJECT")
-    or os.getenv("SITE_URL")
-    or os.getenv("RENDER_EXTERNAL_URL")
+    or PUBLIC_SITE_URL
     or "mailto:admin@example.com"
 ).strip()
 PUSH_CSRF_COOKIE = "panchang_push_csrf"
@@ -1313,6 +1331,21 @@ def resolve_context(
 # ---------------------------------------------------------------------------
 
 EN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"]
+MONTH_NAMES_SHORT: dict[str, list[str]] = {
+    "en": EN_MONTHS,
+    "hi": ["जन", "फ़र", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अग", "सित", "अक्त", "नव", "दिस"],
+    "mr": ["जाने", "फेब्रु", "मार्च", "एप्रिल", "मे", "जून", "जुलै", "ऑग", "सप्टें", "ऑक्टो", "नोव्हें", "डिसें"],
+    "gu": ["જાન", "ફેબ્રુ", "માર્ચ", "એપ્રિલ", "મે", "જૂન", "જુલાઈ", "ઑગ", "સપ્ટે", "ઑક્ટો", "નવે", "ડિસે"],
+    "bn": ["জানু", "ফেব্রু", "মার্চ", "এপ্রিল", "মে", "জুন", "জুলাই", "আগ", "সেপ্টে", "অক্টো", "নভে", "ডিসে"],
+    "ta": ["ஜன", "பிப்", "மார்ச்", "ஏப்", "மே", "ஜூன்", "ஜூலை", "ஆக", "செப்", "அக்", "நவ", "டிச"],
+    "te": ["జన", "ఫిబ్ర", "మార్చి", "ఏప్రి", "మే", "జూన్", "జులై", "ఆగ", "సెప్టెం", "అక్టో", "నవం", "డిసెం"],
+    "kn": ["ಜನ", "ಫೆಬ್ರ", "ಮಾರ್ಚ್", "ಏಪ್ರಿಲ್", "ಮೇ", "ಜೂನ್", "ಜುಲೈ", "ಆಗ", "ಸೆಪ್ಟೆಂ", "ಅಕ್ಟೋ", "ನವೆಂ", "ಡಿಸೆಂ"],
+    "ml": ["ജനു", "ഫെബ്രു", "മാർച്ച്", "ഏപ്രിൽ", "മേയ്", "ജൂൺ", "ജൂലൈ", "ഓഗ", "സെപ്റ്റം", "ഒക്ടോ", "നവം", "ഡിസം"],
+    "pa": ["ਜਨ", "ਫ਼ਰ", "ਮਾਰਚ", "ਅਪ੍ਰੈਲ", "ਮਈ", "ਜੂਨ", "ਜੁਲਾਈ", "ਅਗ", "ਸਤੰ", "ਅਕਤੂ", "ਨਵੰ", "ਦਸੰ"],
+    "or": ["ଜାନୁ", "ଫେବ୍ରୁ", "ମାର୍ଚ୍ଚ", "ଏପ୍ରିଲ", "ମେ", "ଜୁନ", "ଜୁଲାଇ", "ଅଗ", "ସେପ୍ଟେ", "ଅକ୍ଟୋ", "ନଭେ", "ଡିସେ"],
+    "ne": ["जन", "फेब्रु", "मार्च", "अप्रिल", "मे", "जुन", "जुलाई", "अग", "सेप्टे", "अक्टो", "नोभे", "डिसे"],
+    "sa": ["जन", "फेब्रु", "मार्च", "अप्रैल", "मे", "जून", "जुलाई", "अग", "सित", "अक्त", "नव", "दिस"],
+}
 EN_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 WEEKDAY_NAMES: dict[str, list[str]] = {
     "en": EN_WEEKDAYS,
@@ -1348,11 +1381,14 @@ def format_clock(value: datetime) -> str:
     return f"{hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
 
 
+def localized_month(value: date | datetime, lang: str = "en") -> str:
+    months = MONTH_NAMES_SHORT.get(lang, EN_MONTHS)
+    return months[value.month - 1]
+
+
 def format_date_label(value: date, lang: str = "en", include_year: bool = True) -> str:
-    if lang == "en":
-        core = f"{ordinal(value.day)} {EN_MONTHS[value.month - 1]}"
-    else:
-        core = f"{value.day:02d}-{value.month:02d}"
+    # Use one unambiguous Gregorian pattern in every language: 12 Sept 2026.
+    core = f"{value.day} {localized_month(value, lang)}"
     return f"{core} {value.year}" if include_year else core
 
 
@@ -1361,43 +1397,34 @@ def format_header(value: datetime, place: str, lang: str) -> str:
 
 
 def format_compact_header(value: datetime, place: str, lang: str) -> str:
-    # The mobile header preserves place, date and time while using fewer glyphs
-    # so it can stay large enough for older readers on narrow screens.
-    date_text = f"{value.day}/{value.month}"
+    # On narrow screens the page context is already obvious. Omitting the repeated
+    # Panchang label preserves the complete place, date and time in every script.
+    date_text = format_date_label(value.date(), lang)
     compact_hour = value.hour % 12 or 12
     compact_clock = f"{compact_hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
-    return f"{tr(lang, 'panchang')} · {place} · {date_text} · {compact_clock}"
+    return f"{place} · {date_text} · {compact_clock}"
 
 
 def format_card_date(value: date, lang: str = "en") -> str:
     """Compact, unambiguous date shown on every timeline card."""
-    if lang == "en":
-        return f"{value.day} {EN_MONTHS[value.month - 1]} {value.year}"
-    return f"{value.day:02d}-{value.month:02d}-{value.year}"
+    return f"{value.day} {localized_month(value, lang)} {value.year}"
 
 
 def format_card_date_range(start: date, end: date, lang: str = "en") -> str:
     if start == end:
         return format_card_date(start, lang)
-    if lang == "en":
-        if start.year == end.year:
-            return f"{start.day} {EN_MONTHS[start.month - 1]} – {end.day} {EN_MONTHS[end.month - 1]} {end.year}"
-        return f"{format_card_date(start, lang)} – {format_card_date(end, lang)}"
+    if start.year == end.year and start.month == end.month:
+        return f"{start.day}–{end.day} {localized_month(end, lang)} {end.year}"
     if start.year == end.year:
-        return f"{start.day:02d}-{start.month:02d} – {end.day:02d}-{end.month:02d}-{end.year}"
+        return f"{start.day} {localized_month(start, lang)} – {end.day} {localized_month(end, lang)} {end.year}"
     return f"{format_card_date(start, lang)} – {format_card_date(end, lang)}"
 
 
 def format_endpoint_display(value: datetime, lang: str = "en", include_year: bool = False) -> str:
-    """Compact date-and-time endpoint for a cross-day card."""
-    if lang == "en":
-        date_text = f"{value.day} {EN_MONTHS[value.month - 1]}"
-        if include_year:
-            date_text += f" {value.year}"
-    else:
-        date_text = f"{value.day:02d}-{value.month:02d}"
-        if include_year:
-            date_text += f"-{value.year}"
+    """Date-and-time endpoint for a cross-day card."""
+    date_text = f"{value.day} {localized_month(value, lang)}"
+    if include_year:
+        date_text += f" {value.year}"
     return f"{date_text} · {format_clock(value)}"
 
 
@@ -1632,7 +1659,7 @@ def interval_item(
     current = instant_contains(start, at, end) if focus is None else focus
     date_text = format_card_date_range(start.date(), end.date(), lang)
     clock_text = format_clock_range(start, end)
-    endpoint_year = start.year != end.year
+    endpoint_year = True
     start_display = format_endpoint_display(start, lang, endpoint_year)
     end_display = format_endpoint_display(end, lang, endpoint_year)
     return {
@@ -2253,7 +2280,7 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         "app": {"name": APP_NAME, "version": APP_VERSION},
         "query": {
             "place": context["place"], "slug": context["slug"], "lat": round(lat, 6), "lon": round(lon, 6),
-            "timezone": tz_name, "date": at.date().isoformat(), "time": at.strftime("%H:%M"),
+            "timezone": tz_name, "date": at.date().isoformat(), "date_display": format_card_date(at.date(), lang), "time": at.strftime("%H:%M"),
             "language": lang, "live": context["live"], "country": context["country"],
         },
         "headers": headers,
@@ -2266,6 +2293,8 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
         "sections": sections,
         "summary": summary,
         "ui": ui_text(lang),
+        "months": MONTH_NAMES_SHORT.get(lang, EN_MONTHS),
+        "month_names": MONTH_NAMES_SHORT,
         "languages": [
             {"code": code, "name": info["name"], "native": info["native"]}
             for code, info in LANGUAGES.items()
@@ -2276,17 +2305,16 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def site_root() -> str:
-    configured = (os.getenv("SITE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
-    if configured:
-        if not re.match(r"^https?://", configured, flags=re.IGNORECASE):
-            configured = f"https://{configured}"
-        return configured
-    root = request.url_root.rstrip("/")
-    # Render normally supplies X-Forwarded-Proto (handled by ProxyFix), while
-    # this fallback protects social-card URLs if a proxy omits it.
-    if root.startswith("http://") and not re.search(r"(?:localhost|127\.0\.0\.1)(?::\d+)?$", root, flags=re.IGNORECASE):
-        root = "https://" + root[len("http://"):]
-    return root
+    # Keep local development self-contained, but use the custom production
+    # domain everywhere else.  This prevents Safari/WhatsApp shares from
+    # exposing the Render service hostname.
+    try:
+        host = (request.host or "").split(":", 1)[0].lower()
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            return request.url_root.rstrip("/")
+    except RuntimeError:
+        pass
+    return PUBLIC_SITE_URL
 
 
 def canonical_url(context: dict[str, Any], lang: str | None = None) -> str:
@@ -2334,6 +2362,141 @@ def og_image_url(context: dict[str, Any]) -> str:
     return f"{site_root()}/og/{context['lang']}/{snapshot}.png?{urlencode(params)}"
 
 
+SEO_COPY_BASE: dict[str, str] = {
+    "en": (
+        "Use Panchang World for a clear daily Panchang for {place} on {date}. Check {tithi}, {nakshatra}, Yoga, Karana, "
+        "sunrise, sunset, Choghadiya, Hora, Muhurta and Lagna with precise local start and end times. The live view updates "
+        "every minute for your chosen place, language and timezone. Scroll each timeline to review earlier and upcoming periods, "
+        "identify auspicious, mixed and inauspicious windows, and plan worship, travel, meetings, purchases, ceremonies and everyday activities."
+    ),
+    "hi": (
+        "पंचांग वर्ल्ड पर {place} के लिए {date} का स्पष्ट दैनिक पंचांग देखें। {tithi}, {nakshatra}, योग, करण, सूर्योदय, सूर्यास्त, "
+        "चौघड़िया, होरा, मुहूर्त और लग्न के सही स्थानीय आरंभ और समाप्ति समय जानें। लाइव दृश्य चुने हुए स्थान, भाषा और समय क्षेत्र के "
+        "अनुसार हर मिनट अपडेट होता है। पिछली और आने वाली अवधियाँ देखने, शुभ, मिश्रित और अशुभ समय पहचानने तथा पूजा, यात्रा, बैठक, "
+        "खरीदारी, संस्कार और दैनिक कार्यों की योजना बनाने के लिए प्रत्येक टाइमलाइन स्क्रॉल करें।"
+    ),
+    "mr": (
+        "पंचांग वर्ल्डवर {place} साठी {date} चे स्पष्ट दैनिक पंचांग पाहा. {tithi}, {nakshatra}, योग, करण, सूर्योदय, सूर्यास्त, चौघडिया, "
+        "होरा, मुहूर्त आणि लग्न यांचे अचूक स्थानिक प्रारंभ व समाप्ती वेळा जाणून घ्या. निवडलेले ठिकाण, भाषा आणि वेळ क्षेत्रानुसार लाइव्ह "
+        "दृश्य दर मिनिटाला अद्ययावत होते. मागील व पुढील कालखंड पाहण्यासाठी, शुभ, मिश्र आणि अशुभ वेळ ओळखण्यासाठी तसेच पूजा, प्रवास, "
+        "बैठक, खरेदी, संस्कार आणि दैनंदिन कामांचे नियोजन करण्यासाठी प्रत्येक टाइमलाइन स्क्रोल करा."
+    ),
+    "gu": (
+        "પંચાંગ વર્લ્ડ પર {place} માટે {date} નું સ્પષ્ટ દૈનિક પંચાંગ જુઓ. {tithi}, {nakshatra}, યોગ, કરણ, સૂર્યોદય, સૂર્યાસ્ત, ચોઘડિયા, "
+        "હોરા, મુહૂર્ત અને લગ્નના ચોક્કસ સ્થાનિક આરંભ અને અંત સમય જાણો. પસંદ કરેલા સ્થળ, ભાષા અને સમય ક્ષેત્ર મુજબ લાઇવ દૃશ્ય દર મિનિટે "
+        "અપડેટ થાય છે. અગાઉના અને આગામી સમયખંડ જોવા, શુભ, મિશ્ર અને અશુભ સમય ઓળખવા તથા પૂજા, પ્રવાસ, બેઠક, ખરીદી, સંસ્કાર અને દૈનિક "
+        "કાર્યોનું આયોજન કરવા દરેક સમયરેખા સ્ક્રોલ કરો."
+    ),
+    "bn": (
+        "পঞ্চাঙ্গ ওয়ার্ল্ডে {place} এলাকার {date} তারিখের পরিষ্কার দৈনিক পঞ্জিকা দেখুন। {tithi}, {nakshatra}, যোগ, করণ, সূর্যোদয়, সূর্যাস্ত, "
+        "চৌঘড়িয়া, হোরা, মুহূর্ত ও লগ্নের সঠিক স্থানীয় শুরু এবং শেষ সময় জানুন। নির্বাচিত স্থান, ভাষা ও সময় অঞ্চলের ভিত্তিতে লাইভ দৃশ্য প্রতি "
+        "মিনিটে হালনাগাদ হয়। আগের ও পরের সময়কাল দেখতে, শুভ, মিশ্র ও অশুভ সময় বুঝতে এবং পূজা, ভ্রমণ, সভা, কেনাকাটা, সংস্কার ও দৈনন্দিন "
+        "কাজ পরিকল্পনা করতে প্রতিটি টাইমলাইন স্ক্রল করুন।"
+    ),
+    "ta": (
+        "பஞ்சாங்க் வேர்ல்டில் {place} இடத்திற்கான {date} தேதியின் தெளிவான தினசரி பஞ்சாங்கத்தைப் பாருங்கள். {tithi}, {nakshatra}, யோகம், கரணம், "
+        "சூரியோதயம், சூரியாஸ்தமனம், சோகடியா, ஹோரா, முகூர்த்தம் மற்றும் லக்னத்தின் துல்லியமான உள்ளூர் தொடக்கம் மற்றும் முடிவு நேரங்களை அறியுங்கள். "
+        "தேர்ந்த இடம், மொழி, நேர மண்டலத்துக்கு ஏற்ப நேரடி காட்சி ஒவ்வொரு நிமிடமும் புதுப்பிக்கப்படும். முந்தைய மற்றும் வரவிருக்கும் காலங்களைப் பார்க்கவும், "
+        "சுப, கலப்பு, அசுப நேரங்களை அறிந்து பூஜை, பயணம், கூட்டம், கொள்முதல், சடங்கு மற்றும் தினசரி பணிகளைத் திட்டமிடவும் ஒவ்வொரு காலவரிசையையும் நகர்த்துங்கள்."
+    ),
+    "te": (
+        "పంచాంగ్ వరల్డ్‌లో {place} కోసం {date} తేదీకి స్పష్టమైన రోజువారీ పంచాంగాన్ని చూడండి. {tithi}, {nakshatra}, యోగం, కరణం, సూర్యోదయం, సూర్యాస్తమయం, "
+        "చౌఘడియా, హోరా, ముహూర్తం మరియు లగ్నం యొక్క ఖచ్చితమైన స్థానిక ప్రారంభం, ముగింపు సమయాలను తెలుసుకోండి. ఎంచుకున్న ప్రదేశం, భాష, సమయ మండలానికి "
+        "అనుగుణంగా లైవ్ దృశ్యం ప్రతి నిమిషం నవీకరించబడుతుంది. గత మరియు రాబోయే కాలాలను చూడటానికి, శుభ, మిశ్రమ, అశుభ సమయాలను గుర్తించి పూజ, ప్రయాణం, "
+        "సమావేశం, కొనుగోలు, సంస్కారం మరియు రోజువారీ పనులను ప్లాన్ చేయటానికి ప్రతి టైమ్‌లైన్‌ను స్క్రోల్ చేయండి."
+    ),
+    "kn": (
+        "ಪಂಚಾಂಗ್ ವರ್ಲ್ಡ್‌ನಲ್ಲಿ {place} ಸ್ಥಳದ {date} ದಿನದ ಸ್ಪಷ್ಟ ದೈನಂದಿನ ಪಂಚಾಂಗವನ್ನು ನೋಡಿ. {tithi}, {nakshatra}, ಯೋಗ, ಕರಣ, ಸೂರ್ಯೋದಯ, ಸೂರ್ಯಾಸ್ತ, "
+        "ಚೌಘಡಿಯಾ, ಹೋರಾ, ಮುಹೂರ್ತ ಮತ್ತು ಲಗ್ನದ ನಿಖರ ಸ್ಥಳೀಯ ಆರಂಭ ಹಾಗೂ ಅಂತ್ಯ ಸಮಯಗಳನ್ನು ತಿಳಿಯಿರಿ. ಆಯ್ದ ಸ್ಥಳ, ಭಾಷೆ ಮತ್ತು ಸಮಯ ವಲಯಕ್ಕೆ ಅನುಗುಣವಾಗಿ ಲೈವ್ "
+        "ನೋಟವು ಪ್ರತಿ ನಿಮಿಷ ನವೀಕರಿಸುತ್ತದೆ. ಹಿಂದಿನ ಮತ್ತು ಮುಂದಿನ ಅವಧಿಗಳನ್ನು ನೋಡಲು, ಶುಭ, ಮಿಶ್ರ ಮತ್ತು ಅಶುಭ ಸಮಯಗಳನ್ನು ಗುರುತಿಸಲು ಹಾಗೂ ಪೂಜೆ, ಪ್ರಯಾಣ, ಸಭೆ, "
+        "ಖರೀದಿ, ಸಂಸ್ಕಾರ ಮತ್ತು ದಿನನಿತ್ಯದ ಕೆಲಸಗಳನ್ನು ಯೋಜಿಸಲು ಪ್ರತಿಯೊಂದು ಸಮಯರೇಖೆಯನ್ನು ಸ್ಕ್ರೋಲ್ ಮಾಡಿ."
+    ),
+    "ml": (
+        "പഞ്ചാങ് വേൾഡിൽ {place} സ്ഥലത്തിനുള്ള {date} തീയതിയിലെ വ്യക്തമായ ദിവസപ്പഞ്ചാംഗം കാണുക. {tithi}, {nakshatra}, യോഗം, കരണം, സൂര്യോദയം, സൂര്യാസ്തമയം, "
+        "ചൗഘഡിയ, ഹോര, മുഹൂർത്തം, ലഗ്നം എന്നിവയുടെ കൃത്യമായ പ്രാദേശിക ആരംഭവും അവസാനവും അറിയുക. തിരഞ്ഞെടുത്ത സ്ഥലം, ഭാഷ, സമയമേഖല അനുസരിച്ച് ലൈവ് കാഴ്ച "
+        "ഓരോ മിനിറ്റിലും പുതുക്കുന്നു. കഴിഞ്ഞതും വരാനിരിക്കുന്നതുമായ കാലങ്ങൾ കാണാനും ശുഭ, മിശ്ര, അശുഭ സമയങ്ങൾ തിരിച്ചറിയാനും പൂജ, യാത്ര, യോഗം, വാങ്ങൽ, സംസ്കാരം, "
+        "ദൈനംദിന പ്രവർത്തനങ്ങൾ എന്നിവ ആസൂത്രണം ചെയ്യാനും ഓരോ സമയരേഖയും സ്ക്രോൾ ചെയ്യുക."
+    ),
+    "pa": (
+        "ਪੰਚਾਂਗ ਵਰਲਡ ਉੱਤੇ {place} ਲਈ {date} ਦਾ ਸਾਫ਼ ਰੋਜ਼ਾਨਾ ਪੰਚਾਂਗ ਵੇਖੋ। {tithi}, {nakshatra}, ਯੋਗ, ਕਰਣ, ਸੂਰਜ ਚੜ੍ਹਨਾ, ਸੂਰਜ ਡੁੱਬਣਾ, ਚੌਘੜੀਆ, "
+        "ਹੋਰਾ, ਮੁਹੂਰਤ ਅਤੇ ਲਗਨ ਦੇ ਸਹੀ ਸਥਾਨਕ ਸ਼ੁਰੂ ਅਤੇ ਅੰਤ ਸਮੇਂ ਜਾਣੋ। ਚੁਣੇ ਹੋਏ ਸਥਾਨ, ਭਾਸ਼ਾ ਅਤੇ ਸਮਾਂ ਖੇਤਰ ਅਨੁਸਾਰ ਲਾਈਵ ਦ੍ਰਿਸ਼ ਹਰ ਮਿੰਟ ਅੱਪਡੇਟ "
+        "ਹੁੰਦਾ ਹੈ। ਪਿਛਲੇ ਅਤੇ ਆਉਣ ਵਾਲੇ ਸਮੇਂ ਵੇਖਣ, ਸ਼ੁਭ, ਮਿਲੇ-ਜੁਲੇ ਅਤੇ ਅਸ਼ੁਭ ਵੇਲੇ ਪਛਾਣਣ ਅਤੇ ਪੂਜਾ, ਯਾਤਰਾ, ਮੀਟਿੰਗ, ਖਰੀਦਦਾਰੀ, ਸੰਸਕਾਰ ਤੇ ਰੋਜ਼ਾਨਾ ਕੰਮਾਂ "
+        "ਦੀ ਯੋਜਨਾ ਬਣਾਉਣ ਲਈ ਹਰ ਟਾਈਮਲਾਈਨ ਸਕ੍ਰੋਲ ਕਰੋ।"
+    ),
+    "or": (
+        "ପଞ୍ଚାଙ୍ଗ ୱର୍ଲ୍ଡରେ {place} ପାଇଁ {date} ତାରିଖର ସ୍ପଷ୍ଟ ଦୈନିକ ପଞ୍ଚାଙ୍ଗ ଦେଖନ୍ତୁ। {tithi}, {nakshatra}, ଯୋଗ, କରଣ, ସୂର୍ଯ୍ୟୋଦୟ, ସୂର୍ଯ୍ୟାସ୍ତ, "
+        "ଚୌଘଡ଼ିଆ, ହୋରା, ମୁହୂର୍ତ୍ତ ଏବଂ ଲଗ୍ନର ସଠିକ୍ ସ୍ଥାନୀୟ ଆରମ୍ଭ ଓ ଶେଷ ସମୟ ଜାଣନ୍ତୁ। ଚୟନିତ ସ୍ଥାନ, ଭାଷା ଓ ସମୟ ମଣ୍ଡଳ ଅନୁସାରେ ଲାଇଭ୍ "
+        "ଦୃଶ୍ୟ ପ୍ରତି ମିନିଟରେ ଅଦ୍ୟତନ ହୁଏ। ପୂର୍ବ ଓ ଆଗାମୀ ସମୟ ଦେଖିବା, ଶୁଭ, ମିଶ୍ର ଓ ଅଶୁଭ ସମୟ ଚିହ୍ନିବା ଏବଂ ପୂଜା, ଯାତ୍ରା, ବୈଠକ, କ୍ରୟ, "
+        "ସଂସ୍କାର ଓ ଦୈନିକ କାମ ଯୋଜନା କରିବା ପାଇଁ ପ୍ରତ୍ୟେକ ସମୟରେଖା ସ୍କ୍ରୋଲ୍ କରନ୍ତୁ।"
+    ),
+    "ne": (
+        "पञ्चाङ्ग वर्ल्डमा {place} का लागि {date} को स्पष्ट दैनिक पञ्चाङ्ग हेर्नुहोस्। {tithi}, {nakshatra}, योग, करण, सूर्योदय, सूर्यास्त, चौघडिया, होरा, "
+        "मुहूर्त र लग्नका सही स्थानीय सुरु र अन्त्य समय जान्नुहोस्। रोजिएको स्थान, भाषा र समय क्षेत्रअनुसार लाइभ दृश्य हरेक मिनेट अद्यावधिक हुन्छ। अघिल्ला र "
+        "आगामी अवधिहरू हेर्न, शुभ, मिश्रित र अशुभ समय पहिचान गर्न तथा पूजा, यात्रा, बैठक, खरिद, संस्कार र दैनिक कामको योजना बनाउन प्रत्येक समयरेखा स्क्रोल "
+        "गर्नुहोस्। पृष्ठ सुरक्षित गर्नुहोस् र बिहानको सूचना चालु गरेर दिनभर भरपर्दो पात्रो मार्गदर्शनका लागि फर्कनुहोस्।"
+    ),
+    "sa": (
+        "पञ्चाङ्ग वर्ल्ड मध्ये {place} स्थानस्य {date} दिनाङ्कस्य स्पष्टं दैनिकं पञ्चाङ्गं पश्यतु। {tithi}, {nakshatra}, योगः, करणम्, सूर्योदयः, सूर्यास्तः, चौघडिया, "
+        "होरा, मुहूर्तः, लग्नं च यथार्थस्थानीयारम्भसमाप्तिसमयैः ज्ञायताम्। चयनितस्थानभाषाकालक्षेत्रानुसारं जीवदृश्यं प्रतिनिमेषम् अद्यतनं भवति। पूर्वागामिकालान् द्रष्टुं, "
+        "शुभमिश्राशुभसमयान् ज्ञातुं, पूजायात्रासभाक्रयसंस्कारदैनिककार्याणां योजनां कर्तुं प्रत्येकां कालरेखां सञ्चालयतु। पृष्ठं रक्षतु, प्रातःसूचनां सक्रियीकुरुतु, दिवसभरं पठनीयाय "
+        "विश्वसनीयाय च हिन्दूपञ्चाङ्गमार्गदर्शनाय पुनरागच्छतु।"
+    ),
+}
+
+
+def build_seo_copy(context: dict[str, Any], data: dict[str, Any]) -> str:
+    """Return exactly 100 visible, localized SEO words without altering the meta description."""
+    lang = context["lang"]
+    summary = data.get("summary", {})
+    base = SEO_COPY_BASE.get(lang, SEO_COPY_BASE["en"]).format(
+        place=context["place"],
+        date=format_date_label(context["date"], lang),
+        tithi=summary.get("tithi", {}).get("title", tr(lang, "tithi")),
+        nakshatra=summary.get("nakshatra", {}).get("title", tr(lang, "nakshatra")),
+    ).strip()
+    words = base.split()
+    related_phrases: list[str] = [
+        tr(lang, "panchang"), tr(lang, "tithi"), tr(lang, "nakshatra"), tr(lang, "yoga"),
+        tr(lang, "karana"), tr(lang, "sunrise"), tr(lang, "sunset"), tr(lang, "choghadiya"),
+        tr(lang, "hora"), tr(lang, "period"), tr(lang, "lagna"), tr(lang, "good"),
+        tr(lang, "avoid"), tr(lang, "today"), context["place"], format_date_label(context["date"], lang),
+        "Panchang", "Panchangam", "Tithi", "Nakshatra", "Yoga", "Karana", "Choghadiya", "Hora",
+        "Muhurta", "Lagna", "Rahu", "Kalam", "Brahma", "Abhijit", "Sunrise", "Sunset",
+    ]
+    related_phrases.extend(localize_sanskrit(pair, lang) for pair in NAKSHATRA_NAMES)
+    related_phrases.extend(localize_sanskrit(pair, lang) for pair in TITHI_NAMES)
+    seen = {re.sub(r"[^\w\u0080-\uffff]+", "", word, flags=re.UNICODE).casefold() for word in words}
+    extras: list[str] = []
+    for phrase in related_phrases:
+        for token in str(phrase).split():
+            clean = re.sub(r"[^\w\u0080-\uffff]+", "", token, flags=re.UNICODE).casefold()
+            if clean and clean not in seen:
+                seen.add(clean)
+                extras.append(token.strip(" ,.;:—–"))
+    if len(words) < 100:
+        needed = 100 - len(words)
+        words.extend(extras[:needed])
+    if len(words) < 100:
+        fallback = ["daily", "calendar", "timings", "local", "today", "auspicious", "muhurta"]
+        index = 0
+        while len(words) < 100:
+            words.append(fallback[index % len(fallback)])
+            index += 1
+    return " ".join(words[:100]).rstrip(" ,.;:—–") + "."
+
+
+def build_seo_keywords(context: dict[str, Any], data: dict[str, Any]) -> str:
+    # The visible copy carries the substance; this concise metadata list helps
+    # non-Google consumers without replacing or lengthening the description.
+    terms = [
+        tr(context["lang"], "panchang"), context["place"], format_date_label(context["date"], context["lang"]),
+        tr(context["lang"], "tithi"), tr(context["lang"], "nakshatra"), tr(context["lang"], "yoga"),
+        tr(context["lang"], "karana"), tr(context["lang"], "choghadiya"), tr(context["lang"], "hora"),
+        tr(context["lang"], "period"), tr(context["lang"], "lagna"), "Panchang", "Panchangam",
+    ]
+    return ", ".join(dict.fromkeys(str(term).strip() for term in terms if str(term).strip()))
+
+
 def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
     lang = context["lang"]
     summary = data["summary"]
@@ -2362,9 +2525,11 @@ def seo_payload(context: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]
     alternates = {code: canonical_url(context, code) for code in LANGUAGES}
     alternates["x-default"] = canonical_url(context, "en")
     image_alt = f"{tr(lang, 'share_image_alt')}: {context['place']}, {date_local}"
+    seo_copy = build_seo_copy(context, data)
     return {
         "title": title[:200], "description": description[:320], "canonical": canonical,
         "alternates": alternates, "og_image": og_image_url(context), "image_alt": image_alt[:220],
+        "copy": seo_copy, "keywords": build_seo_keywords(context, data),
     }
 
 
@@ -2570,6 +2735,8 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "name": seo["title"],
             "headline": seo["title"],
             "description": seo["description"],
+            "text": seo["copy"],
+            "keywords": seo["keywords"],
             "inLanguage": context["lang"],
             "isPartOf": {"@id": website_id},
             "about": [{"@id": place_id}, {"@id": terms_id}],
@@ -2592,6 +2759,7 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "@id": dataset_id,
             "name": seo["title"],
             "description": seo["description"],
+            "abstract": seo["copy"],
             "url": seo["canonical"],
             "mainEntityOfPage": {"@id": page_id},
             "creator": {"@id": app_id},
@@ -2612,8 +2780,8 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
                 "name": "Machine-readable Panchang JSON",
             },
             "keywords": [
-                "Panchang", "Panchangam", "Tithi", "Nakshatra", "Yoga", "Karana", "Choghadiya", "Hora",
-                "Muhurta", "Lagna", context["place"], context["date"].isoformat(),
+                seo["keywords"], "Panchang", "Panchangam", "Tithi", "Nakshatra", "Yoga", "Karana", "Choghadiya", "Hora",
+                "Muhurta", "Lagna", context["place"], format_date_label(context["date"], context["lang"]),
             ],
             "hasPart": [{"@id": observation["@id"]} for observation in observations],
         },
@@ -2791,10 +2959,11 @@ html[data-theme="dark"] .day-carousel {
 .day-rail::-webkit-scrollbar, .timeline::-webkit-scrollbar { display: none; }
 .day-panel {
   flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: center; scroll-snap-stop: always;
-  display: grid; place-items: center; padding: 0 calc(var(--header-right-space) + 7px) 0 calc(var(--header-left-space) + 7px);
+  display: grid; place-items: center; overflow: hidden;
+  padding: 0 calc(var(--header-right-space) + 7px) 0 calc(var(--header-left-space) + 7px);
 }
 .day-title {
-  display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: visible;
+  display: block; width: 100%; margin: 0; white-space: nowrap; text-align: center; overflow: hidden; text-overflow: clip;
   color: var(--text); font-size: clamp(18px, 2.55vw, 41px); line-height: 1.16; padding-block: .08em; font-weight: 900; letter-spacing: -.045em;
   font-variant-numeric: tabular-nums;
 }
@@ -3407,8 +3576,8 @@ html[data-theme="dark"] .action-button.primary {
 @media (max-width: 560px) {
   :root {
     --label-width: clamp(108px, 31vw, 126px);
-    --header-left-space: 42px;
-    --header-right-space: 42px;
+    --header-left-space: 48px;
+    --header-right-space: 48px;
     --header-height: clamp(58px, 7.8vh, 68px);
   }
   .header-full { display: none; }
@@ -3434,7 +3603,7 @@ html[data-theme="dark"] .action-button.primary {
 }
 
 @media (max-width: 360px) {
-  :root { --label-width: 108px; --header-left-space: 39px; --header-right-space: 39px; }
+  :root { --label-width: 108px; --header-left-space: 45px; --header-right-space: 45px; }
   .day-title { font-size: clamp(13px, 4.2vw, 15.5px); }
   .previous-control, .header-actions .header-control { width: 38px; height: 38px; min-width: 38px; min-height: 38px; }
   .metric-label { padding-inline: 5px; gap: 5px; }
@@ -3768,6 +3937,7 @@ body {
   .sheet-head { padding-block: 6px; }
   .sheet-body { padding-block: 6px; gap: 5px; }
   .input-shell input, .field input, .field select { height: 32px; }
+  .date-picker-shell { height: 32px; }
   .location-button, .action-button { min-height: 32px; }
   .share-preview-frame { max-width: 230px; }
 }
@@ -3920,6 +4090,118 @@ html[data-theme="dark"] .daily-prompt-close { background: rgba(255,255,255,.07);
   .moment, .metric-row, .day-carousel, .fab, .header-control, .settings-sheet, .daily-prompt { border: 1px solid CanvasText; }
   .badge { border: 1px solid CanvasText; }
 }
+
+/* Stable editor: vertical scrolling only, no sideways movement or width jump. */
+.settings-sheet {
+  overflow: hidden;
+  max-width: calc(100vw - 18px);
+}
+.settings-form,
+.sheet-head,
+.sheet-body,
+.sheet-actions,
+.field,
+.form-grid,
+.switch-row,
+.share-preview,
+.seo-copy {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.settings-form { width: 100%; overflow: hidden; }
+.sheet-body {
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
+}
+.input-shell,
+.input-shell input,
+.field input,
+.field select,
+.location-button,
+.share-preview-frame,
+.share-preview-frame img { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.share-preview-frame { overflow: hidden; aspect-ratio: 1200 / 630; }
+.date-picker-shell {
+  position: relative;
+  width: 100%;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--surface-muted);
+  overflow: hidden;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.date-picker-shell:focus-within {
+  border-color: rgba(67, 84, 196, .68);
+  box-shadow: 0 0 0 4px rgba(67, 84, 196, .11);
+  background: var(--surface-strong);
+}
+.date-display {
+  min-width: 0;
+  flex: 1;
+  padding-inline: 10px 34px;
+  font-size: 13.5px;
+  line-height: 1;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.date-picker-icon {
+  position: absolute;
+  inset-inline-end: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  pointer-events: none;
+}
+.date-picker-shell .date-native-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  opacity: 0;
+  cursor: pointer;
+  background: transparent;
+}
+.seo-copy {
+  margin: 3px 0 1px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-muted) 78%, transparent);
+  font-size: 10.75px;
+  line-height: 1.55;
+  font-weight: 400;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-align: start;
+}
+html[data-theme="dark"] .seo-copy { background: rgba(255,255,255,.035); }
+
+@media (max-width: 560px) {
+  .settings-sheet { width: calc(100vw - 20px); }
+  .seo-copy { font-size: 10.5px; line-height: 1.5; }
+}
 """
 
 JS = r"""
@@ -3997,6 +4279,7 @@ JS = r"""
   const placeInput = $('#placeInput');
   const placeResults = $('#placeResults');
   const dateInput = $('#dateInput');
+  const dateDisplay = $('#dateDisplay');
   const timeInput = $('#timeInput');
   const languageInput = $('#languageInput');
   const liveInput = $('#liveInput');
@@ -4011,6 +4294,7 @@ JS = r"""
   const liveIndicator = $('#liveIndicator');
   const ldJsonNode = $('#structuredData');
   const ogPreviewImage = $('#ogPreviewImage');
+  const seoCopyNode = $('#seoCopy');
   const themeToggleButton = $('#themeToggleButton');
   const dailyPrompt = $('#dailyPrompt');
   const dailyPromptClose = $('#dailyPromptClose');
@@ -4024,6 +4308,25 @@ JS = r"""
     en: 'en-IN', hi: 'hi-IN', mr: 'mr-IN', gu: 'gu-IN', bn: 'bn-IN', ta: 'ta-IN',
     te: 'te-IN', kn: 'kn-IN', ml: 'ml-IN', pa: 'pa-IN', or: 'or-IN', ne: 'ne-NP', sa: 'sa-IN'
   };
+
+  function readableIsoDate(isoDate, language = settings.language) {
+    const values = String(isoDate || '').split('-').map(Number);
+    if (values.length !== 3 || values.some(value => !Number.isFinite(value))) return String(isoDate || '');
+    const [year, month, day] = values;
+    const languageMonths = state.month_names?.[language];
+    const months = Array.isArray(languageMonths) && languageMonths.length === 12
+      ? languageMonths
+      : (Array.isArray(state.months) && state.months.length === 12
+        ? state.months
+        : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec']);
+    return `${day} ${months[Math.max(0, Math.min(11, month - 1))]} ${year}`;
+  }
+
+  function syncDateDisplay() {
+    if (!dateDisplay) return;
+    dateDisplay.textContent = readableIsoDate(dateInput?.value || settings.date, languageInput?.value || settings.language);
+    dateDisplay.lang = languageInput?.value || settings.language;
+  }
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -4373,26 +4676,32 @@ JS = r"""
       </div>`).join('');
     suppressDayScroll = true;
     requestAnimationFrame(() => {
-      dayRail.scrollLeft = dayRail.clientWidth;
+      centerDayRail();
       fitHeaderText();
       window.setTimeout(() => { suppressDayScroll = false; }, 90);
     });
     liveIndicator.hidden = !settings.live;
   }
 
+  function centerDayRail() {
+    const currentPanel = $('.day-panel[data-position="current"]', dayRail);
+    dayRail.scrollLeft = currentPanel ? currentPanel.offsetLeft : dayRail.clientWidth;
+  }
+
   function fitHeaderText() {
+    const minimum = window.innerWidth <= 360 ? 9.5 : window.innerWidth <= 560 ? 10.5 : 14;
     $$('.day-title', dayRail).forEach(node => {
       node.style.fontSize = '';
       const maximum = parseFloat(getComputedStyle(node).fontSize) || 24;
-      let low = window.innerWidth <= 560 ? 12 : 14;
+      let low = minimum;
       let high = maximum;
-      for (let i = 0; i < 8; i += 1) {
+      for (let i = 0; i < 9; i += 1) {
         const mid = (low + high) / 2;
         node.style.fontSize = `${mid}px`;
         if (node.scrollWidth <= node.clientWidth) low = mid;
         else high = mid;
       }
-      node.style.fontSize = `${Math.max(window.innerWidth <= 560 ? 12 : 14, low - .15)}px`;
+      node.style.fontSize = `${Math.max(minimum, low - .1)}px`;
     });
   }
 
@@ -4453,6 +4762,14 @@ JS = r"""
     document.title = state.seo.title;
     const description = $('meta[name="description"]');
     if (description) description.content = state.seo.description;
+    const abstractMeta = $('meta[name="abstract"]');
+    if (abstractMeta) abstractMeta.content = state.seo.copy || '';
+    const keywords = $('meta[name="keywords"]');
+    if (keywords) keywords.content = state.seo.keywords || '';
+    if (seoCopyNode) {
+      seoCopyNode.textContent = state.seo.copy || '';
+      seoCopyNode.lang = settings.language;
+    }
     const canonical = $('link[rel="canonical"]');
     if (canonical) canonical.href = state.seo.canonical;
     const ogTitle = $('meta[property="og:title"]');
@@ -4674,6 +4991,7 @@ JS = r"""
     timeInput.value = settings.time;
     languageInput.value = settings.language;
     liveInput.checked = Boolean(settings.live);
+    syncDateDisplay();
     updateThemeToggle();
     toggleLiveFields({syncNow: false});
     placeResults.innerHTML = '';
@@ -4684,10 +5002,13 @@ JS = r"""
   function toggleLiveFields({syncNow = true} = {}) {
     settings.live = Boolean(liveInput.checked);
     liveInput.setAttribute('aria-checked', String(settings.live));
-    dateInput.disabled = settings.live;
-    timeInput.disabled = settings.live;
-    dateInput.setAttribute('aria-disabled', String(settings.live));
-    timeInput.setAttribute('aria-disabled', String(settings.live));
+    // Date and Time stay editable in both modes. Changing either field below
+    // automatically switches to manual mode, so a user's selection is never
+    // silently ignored while the live switch is on.
+    dateInput.disabled = false;
+    timeInput.disabled = false;
+    dateInput.setAttribute('aria-disabled', 'false');
+    timeInput.setAttribute('aria-disabled', 'false');
     if (settings.live) {
       settings.followToday = true;
       if (syncNow) applyCurrentZonedTime({updateDate: true});
@@ -4699,16 +5020,33 @@ JS = r"""
       settings.date = dateInput.value || settings.date;
       settings.time = timeInput.value || settings.time;
     }
+    syncDateDisplay();
     liveIndicator.hidden = !settings.live;
+    updateOgPreview();
+  }
+
+  function adoptManualDateTime() {
+    if (liveInput.checked) {
+      liveInput.checked = false;
+      settings.live = false;
+      settings.followToday = false;
+      liveInput.setAttribute('aria-checked', 'false');
+      liveIndicator.hidden = true;
+    }
+    settings.date = dateInput.value || settings.date;
+    settings.time = timeInput.value || settings.time;
+    syncDateDisplay();
     updateOgPreview();
   }
 
   editButton.addEventListener('click', openDialog);
   closeButton.addEventListener('click', closeDialog);
   cancelButton.addEventListener('click', closeDialog);
-  languageInput.addEventListener('change', () => { settings.language = languageInput.value; updateOgPreview(); });
-  dateInput.addEventListener('change', () => { if (!liveInput.checked) settings.date = dateInput.value; updateOgPreview(); });
-  timeInput.addEventListener('change', () => { if (!liveInput.checked) settings.time = timeInput.value; updateOgPreview(); });
+  languageInput.addEventListener('change', () => { settings.language = languageInput.value; syncDateDisplay(); updateOgPreview(); });
+  dateInput.addEventListener('input', adoptManualDateTime);
+  dateInput.addEventListener('change', adoptManualDateTime);
+  timeInput.addEventListener('input', adoptManualDateTime);
+  timeInput.addEventListener('change', adoptManualDateTime);
   liveInput.addEventListener('change', () => toggleLiveFields({syncNow: true}));
   dialog.addEventListener('click', event => {
     if (event.target === dialog) closeDialog();
@@ -4916,25 +5254,15 @@ JS = r"""
     const parts = getZonedParts(settings.timezone);
     const [selectedYear, selectedMonth, selectedDay] = settings.date.split('-').map(Number);
     const dateValue = new Date(Date.UTC(selectedYear, selectedMonth - 1, selectedDay + offset, 12));
-    const locale = localeMap[settings.language] || 'en-IN';
-    let dateText;
-    let compactDate;
-    if (settings.language === 'en') {
-      const day = dateValue.getUTCDate();
-      const remainder = day % 100;
-      const suffix = remainder >= 11 && remainder <= 13 ? 'th' : ({1: 'st', 2: 'nd', 3: 'rd'}[day % 10] || 'th');
-      const month = new Intl.DateTimeFormat(locale, {month: 'short', timeZone: 'UTC'}).format(dateValue);
-      dateText = `${day}${suffix} ${month} ${dateValue.getUTCFullYear()}`;
-      compactDate = `${day}/${dateValue.getUTCMonth() + 1}`;
-    } else {
-      dateText = new Intl.DateTimeFormat(locale, {day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'}).format(dateValue);
-      compactDate = `${dateValue.getUTCDate()}/${dateValue.getUTCMonth() + 1}`;
-    }
+    const months = Array.isArray(state.months) && state.months.length === 12
+      ? state.months
+      : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+    const dateText = `${dateValue.getUTCDate()} ${months[dateValue.getUTCMonth()]} ${dateValue.getUTCFullYear()}`;
     const displayHour = parts.hour % 12 || 12;
     const timeText = `${displayHour}:${String(parts.minute).padStart(2, '0')} ${parts.hour < 12 ? 'AM' : 'PM'}`;
     return {
       full: `${state.ui.panchang} (${settings.place} - ${dateText} - ${timeText})`,
-      compact: `${state.ui.panchang} · ${settings.place} · ${compactDate} · ${timeText}`
+      compact: `${settings.place} · ${dateText} · ${timeText}`
     };
   }
 
@@ -4961,6 +5289,7 @@ JS = r"""
     if (dialog.open && liveInput.checked) {
       dateInput.value = settings.date;
       timeInput.value = settings.time;
+      syncDateDisplay();
       updateOgPreview();
     }
     fitHeaderText();
@@ -4985,6 +5314,7 @@ JS = r"""
     if (dialog.open && liveInput.checked) {
       dateInput.value = settings.date;
       timeInput.value = settings.time;
+      syncDateDisplay();
       updateOgPreview();
     }
     return refreshNow({manual: false, preserveScroll: true});
@@ -5003,7 +5333,7 @@ JS = r"""
     fitHeaderText();
     centerCurrentItems();
     suppressDayScroll = true;
-    dayRail.scrollLeft = dayRail.clientWidth;
+    centerDayRail();
     window.setTimeout(() => { suppressDayScroll = false; }, 80);
   }, {passive: true});
 
@@ -6923,7 +7253,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="format-detection" content="telephone=no">
   <meta name="description" content="{{ seo.description }}">
-  <meta name="keywords" content="Panchang, Panchangam, {{ context.place }}, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, Muhurta, Lagna, sunrise, sunset">
+  <meta name="abstract" content="{{ seo["copy"] }}">
+  <meta name="keywords" content="{{ seo.keywords }}">
   <script nonce="{{ nonce }}">try{document.documentElement.dataset.theme=localStorage.getItem('panchang-theme')==='dark'?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}</script>
 
   <title>{{ seo.title }}</title>
@@ -7070,23 +7401,27 @@ HTML_TEMPLATE = r"""<!doctype html>
           <div class="place-results" id="placeResults" role="listbox" aria-live="polite"></div>
         </div>
 
-        <div class="form-grid">
-          <div class="field">
-            <label for="dateInput" data-i18n="date">{{ data.ui.date }}</label>
-            <input id="dateInput" type="date" min="1600-01-01" max="2400-12-31" value="{{ context.date.isoformat() }}"{% if context.live %} disabled{% endif %} aria-disabled="{{ 'true' if context.live else 'false' }}">
-          </div>
-          <div class="field">
-            <label for="timeInput" data-i18n="time">{{ data.ui.time }}</label>
-            <input id="timeInput" type="time" step="60" value="{{ context.time.strftime('%H:%M') }}"{% if context.live %} disabled{% endif %} aria-disabled="{{ 'true' if context.live else 'false' }}">
-          </div>
-        </div>
-
         <div class="switch-row">
           <label for="liveInput" data-i18n="live_time">{{ data.ui.live_time }}</label>
           <label class="switch" aria-label="{{ data.ui.live_time }}">
             <input id="liveInput" type="checkbox"{% if context.live %} checked{% endif %} aria-checked="{{ 'true' if context.live else 'false' }}">
             <span class="switch-track" aria-hidden="true"></span>
           </label>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="dateInput" data-i18n="date">{{ data.ui.date }}</label>
+            <div class="date-picker-shell">
+              <span class="date-display" id="dateDisplay">{{ data.query.date_display }}</span>
+              <span class="date-picker-icon" aria-hidden="true">▦</span>
+              <input class="date-native-input" id="dateInput" type="date" min="1600-01-01" max="2400-12-31" value="{{ context.date.isoformat() }}" aria-describedby="dateDisplay" aria-disabled="false">
+            </div>
+          </div>
+          <div class="field">
+            <label for="timeInput" data-i18n="time">{{ data.ui.time }}</label>
+            <input id="timeInput" type="time" step="60" value="{{ context.time.strftime('%H:%M') }}" aria-disabled="false">
+          </div>
         </div>
 
         <button class="location-button" id="locationButton" type="button" data-i18n="use_location">{{ data.ui.use_location }}</button>
@@ -7096,6 +7431,7 @@ HTML_TEMPLATE = r"""<!doctype html>
             <img id="ogPreviewImage" src="{{ seo.og_image }}" alt="{{ seo.image_alt }}" width="1200" height="630" loading="eager" decoding="async">
           </div>
         </figure>
+        <p class="seo-copy" id="seoCopy" lang="{{ context.lang }}">{{ seo["copy"] }}</p>
       </div>
       <div class="sheet-actions">
         <button class="action-button secondary" id="cancelButton" type="button" data-i18n="cancel">{{ data.ui.cancel }}</button>
@@ -7220,6 +7556,21 @@ def page_response(path_lang: str | None = None, place_slug: str | None = None, d
         path="/",
     )
     return response
+
+
+@app.before_request
+def redirect_render_hostname() -> Response | None:
+    """Move human and crawler GET requests from Render to the public domain."""
+    if request.method not in {"GET", "HEAD"} or request.path == "/health":
+        return None
+    host = (request.host or "").split(":", 1)[0].lower()
+    public_host = (urlsplit(PUBLIC_SITE_URL).hostname or "").lower()
+    if host.endswith(".onrender.com") and public_host and host != public_host:
+        suffix = request.full_path
+        if suffix.endswith("?"):
+            suffix = suffix[:-1]
+        return redirect(f"{PUBLIC_SITE_URL}{suffix}", code=308)
+    return None
 
 
 @app.after_request
@@ -7511,7 +7862,7 @@ def reverse_geocode_result(latitude_key: float, longitude_key: float, lang: str)
         return local_match
 
     language = lang if lang in LANGUAGES else "en"
-    site_identity = os.getenv("SITE_URL", "").strip() or os.getenv("REVERSE_GEOCODING_CONTACT", "") or "panchang-web-app"
+    site_identity = os.getenv("REVERSE_GEOCODING_CONTACT", "").strip() or PUBLIC_SITE_URL
     user_agent = f"{APP_NAME}/{APP_VERSION} (+{site_identity})"
     endpoint = os.getenv("REVERSE_GEOCODING_API_URL", "https://nominatim.openstreetmap.org/reverse")
 
