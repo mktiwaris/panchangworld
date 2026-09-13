@@ -9,6 +9,9 @@ built-in Moshier ephemeris so no separate ephemeris files are required.
 Production command (Render):
     gunicorn --bind 0.0.0.0:$PORT panchang:app
 
+Daily push cron command (run every minute):
+    python panchang.py send-daily-push
+
 License note: pyswisseph is AGPL-3.0. If this application is published as a
 network service, review and comply with the Swiss Ephemeris/pyswisseph license.
 """
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import glob
+import hashlib
 import html
 import io
 import json
@@ -24,11 +28,15 @@ import math
 import os
 import re
 import secrets
+import sqlite3
+import sys
+import threading
 import unicodedata
 from datetime import date, datetime, time as dt_time, timedelta, timezone
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Iterable
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -49,6 +57,26 @@ except Exception:  # The app still works in English if optional transliteration 
     sanscript = None
     transliterate = None
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row as psycopg_dict_row
+except Exception:  # SQLite remains available for local or persistent-disk deployments.
+    psycopg = None
+    psycopg_dict_row = None
+
+try:
+    from pywebpush import WebPushException, webpush
+except Exception:  # The page remains usable when push dependencies are not installed.
+    WebPushException = Exception
+    webpush = None
+
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+except Exception:  # pywebpush normally supplies cryptography as a dependency.
+    serialization = None
+    ec = None
+
 
 app = Flask(__name__)
 # Render terminates HTTPS before forwarding the request. Trust its single proxy
@@ -58,7 +86,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "1.9.0"
+APP_VERSION = "2.1.0"
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -69,12 +97,556 @@ DEFAULT_PLACE = {
 TIMELINE_PAST_ITEMS = 4
 TIMELINE_FUTURE_ITEMS = 12
 
+# Daily Web Push configuration. A stable PUSH_SECRET and persistent database are
+# intentionally required in production; changing either one invalidates saved
+# subscriptions. Render Postgres should be supplied through DATABASE_URL.
+PUSH_HOUR_LOCAL = 7
+PUSH_OFFER_AFTER_DAYS = 7
+PUSH_DELIVERY_WINDOW_HOURS = 4
+PUSH_RETRY_MINUTES = 15
+PUSH_CLAIM_MINUTES = 10
+PUSH_DATABASE_URL = (os.getenv("PUSH_DATABASE_URL") or os.getenv("DATABASE_URL") or "").strip()
+PUSH_SQLITE_PATH = os.getenv("PUSH_DB_PATH", "").strip()
+PUSH_SECRET = (os.getenv("PUSH_SECRET") or os.getenv("SECRET_KEY") or "").strip()
+PUSH_VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").replace("\\n", "\n").strip()
+PUSH_VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+PUSH_VAPID_SUBJECT = (
+    os.getenv("VAPID_SUBJECT")
+    or os.getenv("SITE_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")
+    or "mailto:admin@example.com"
+).strip()
+PUSH_CSRF_COOKIE = "panchang_push_csrf"
+try:
+    PUSH_MAX_BATCH = max(1, min(5000, int(os.getenv("PUSH_MAX_BATCH", "1000"))))
+except (TypeError, ValueError):
+    PUSH_MAX_BATCH = 1000
+
 UTC = timezone.utc
 IST = ZoneInfo("Asia/Kolkata")
 ASTRO_FLAGS = swe.FLG_MOSEPH | swe.FLG_SPEED | swe.FLG_SIDEREAL
 RISE_SET_FLAGS = swe.FLG_MOSEPH
 swe.set_ephe_path("")
 swe.set_sid_mode(swe.SIDM_LAHIRI, 0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Daily Web Push support
+# ---------------------------------------------------------------------------
+
+_PUSH_DB_INITIALIZED = False
+_PUSH_DB_INIT_LOCK = threading.Lock()
+_P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
+
+
+def _urlsafe_b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _decode_urlsafe_b64(value: str) -> bytes:
+    """Decode padded or unpadded URL-safe Base64 after removing whitespace."""
+    compact = re.sub(r"\s+", "", value or "")
+    compact += "=" * (-len(compact) % 4)
+    return base64.urlsafe_b64decode(compact.encode("ascii"))
+
+
+def _load_vapid_private_value(value: str) -> tuple[Any, str]:
+    """Return (private-key object, pywebpush-compatible value).
+
+    pywebpush accepts either a filesystem path to a PEM key or a Base64URL
+    encoded raw/DER private key. Environment variables commonly contain PEM
+    text, so those are normalized to a Base64URL PKCS#8 DER string.
+    """
+    if not value or serialization is None or ec is None:
+        return None, ""
+
+    if os.path.isfile(value):
+        try:
+            with open(value, "rb") as key_file:
+                key_bytes = key_file.read()
+            key_obj = serialization.load_pem_private_key(key_bytes, password=None)
+            if not isinstance(key_obj, ec.EllipticCurvePrivateKey):
+                return None, ""
+            return key_obj, value
+        except (OSError, TypeError, ValueError):
+            return None, ""
+
+    if "-----BEGIN" in value:
+        try:
+            key_obj = serialization.load_pem_private_key(value.encode("utf-8"), password=None)
+            if not isinstance(key_obj, ec.EllipticCurvePrivateKey):
+                return None, ""
+            der = key_obj.private_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            return key_obj, _urlsafe_b64(der)
+        except (TypeError, ValueError):
+            return None, ""
+
+    try:
+        decoded = _decode_urlsafe_b64(value)
+        if len(decoded) == 32:
+            scalar = int.from_bytes(decoded, "big")
+            if not 1 <= scalar < _P256_ORDER:
+                return None, ""
+            key_obj = ec.derive_private_key(scalar, ec.SECP256R1())
+        else:
+            key_obj = serialization.load_der_private_key(decoded, password=None)
+        if not isinstance(key_obj, ec.EllipticCurvePrivateKey):
+            return None, ""
+        # Re-encode so py-vapid receives canonical URL-safe Base64 regardless
+        # of whether the supplied value used padding or standard Base64 chars.
+        return key_obj, _urlsafe_b64(decoded)
+    except (TypeError, ValueError, UnicodeError, base64.binascii.Error):
+        return None, ""
+
+
+@lru_cache(maxsize=1)
+def push_vapid_config() -> dict[str, str]:
+    """Return a stable VAPID key pair without exposing it to page output."""
+    private_key_obj, private_value = _load_vapid_private_value(PUSH_VAPID_PRIVATE_KEY)
+    public_value = PUSH_VAPID_PUBLIC_KEY
+
+    if private_key_obj is None and PUSH_SECRET and ec is not None and serialization is not None:
+        digest = hashlib.sha256(PUSH_SECRET.encode("utf-8")).digest()
+        scalar = (int.from_bytes(digest, "big") % (_P256_ORDER - 1)) + 1
+        private_key_obj = ec.derive_private_key(scalar, ec.SECP256R1())
+        private_der = private_key_obj.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        private_value = _urlsafe_b64(private_der)
+
+    if not public_value and private_key_obj is not None and serialization is not None:
+        point = private_key_obj.public_key().public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint,
+        )
+        public_value = _urlsafe_b64(point)
+
+    subject = PUSH_VAPID_SUBJECT
+    if subject and not re.match(r"^(?:mailto:|https?://)", subject, flags=re.IGNORECASE):
+        subject = f"https://{subject.lstrip('/')}"
+
+    return {"private": private_value, "public": public_value, "subject": subject}
+
+
+def push_feature_enabled() -> bool:
+    vapid = push_vapid_config()
+    storage_ready = bool(PUSH_DATABASE_URL or PUSH_SQLITE_PATH)
+    postgres_ready = not PUSH_DATABASE_URL.lower().startswith(("postgres://", "postgresql://")) or psycopg is not None
+    return bool(webpush and ec and serialization and vapid["private"] and vapid["public"] and storage_ready and postgres_ready)
+
+
+def _push_db_backend() -> str:
+    return "postgres" if PUSH_DATABASE_URL.lower().startswith(("postgres://", "postgresql://")) else "sqlite"
+
+
+def _push_sql(sql: str, backend: str) -> str:
+    return sql.replace("?", "%s") if backend == "postgres" else sql
+
+
+@contextmanager
+def push_db() -> Iterable[tuple[Any, str]]:
+    backend = _push_db_backend()
+    if backend == "postgres":
+        if psycopg is None:
+            raise RuntimeError("psycopg is required for DATABASE_URL")
+        connection = psycopg.connect(PUSH_DATABASE_URL, row_factory=psycopg_dict_row)
+    else:
+        if not PUSH_SQLITE_PATH:
+            raise RuntimeError("Set DATABASE_URL or PUSH_DB_PATH for persistent push subscriptions")
+        directory = os.path.dirname(os.path.abspath(PUSH_SQLITE_PATH))
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        connection = sqlite3.connect(PUSH_SQLITE_PATH, timeout=30)
+        connection.row_factory = sqlite3.Row
+    try:
+        yield connection, backend
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def ensure_push_table() -> None:
+    global _PUSH_DB_INITIALIZED
+    if _PUSH_DB_INITIALIZED:
+        return
+    with _PUSH_DB_INIT_LOCK:
+        if _PUSH_DB_INITIALIZED:
+            return
+        with push_db() as (connection, backend):
+            connection.execute(_push_sql(
+                """
+                CREATE TABLE IF NOT EXISTS push_subscriptions (
+                    endpoint TEXT PRIMARY KEY,
+                    subscription_json TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    target_url TEXT NOT NULL,
+                    next_send_utc TEXT NOT NULL,
+                    last_sent_local_date TEXT,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    claim_token TEXT,
+                    claim_until_utc TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """, backend
+            ))
+            connection.execute(_push_sql(
+                "CREATE INDEX IF NOT EXISTS idx_push_due ON push_subscriptions (active, next_send_utc)", backend
+            ))
+            # Upgrade databases created by an earlier preview of the daily-push
+            # feature without dropping any saved browser subscriptions.
+            if backend == "postgres":
+                column_rows = connection.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'push_subscriptions'"
+                ).fetchall()
+                columns = {
+                    str(row.get("column_name") if isinstance(row, dict) else row[0])
+                    for row in column_rows
+                }
+            else:
+                columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
+            if "claim_token" not in columns:
+                connection.execute("ALTER TABLE push_subscriptions ADD COLUMN claim_token TEXT")
+            if "claim_until_utc" not in columns:
+                connection.execute("ALTER TABLE push_subscriptions ADD COLUMN claim_until_utc TEXT")
+        _PUSH_DB_INITIALIZED = True
+
+
+def _iso_utc(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat()
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _safe_push_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+        return value
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return "UTC"
+
+
+def next_push_time_utc(timezone_name: str, now_utc: datetime | None = None) -> datetime:
+    now_value = (now_utc or datetime.now(UTC)).astimezone(UTC)
+    zone = ZoneInfo(_safe_push_timezone(timezone_name))
+    local_now = now_value.astimezone(zone)
+    candidate = datetime(
+        local_now.year, local_now.month, local_now.day, PUSH_HOUR_LOCAL, 0, tzinfo=zone
+    )
+    if candidate <= local_now:
+        next_day = local_now.date() + timedelta(days=1)
+        candidate = datetime(next_day.year, next_day.month, next_day.day, PUSH_HOUR_LOCAL, 0, tzinfo=zone)
+    return candidate.astimezone(UTC)
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    return dict(row) if row is not None else {}
+
+
+def _normalize_push_target(value: Any) -> str:
+    target = str(value or "/").strip()
+    if len(target) > 2400:
+        target = "/"
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        return "/"
+    if parsed.path.startswith(("/api/", "/sw.js")):
+        return "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.path}{query}"
+
+
+def _valid_push_subscription(subscription: Any) -> dict[str, Any] | None:
+    if not isinstance(subscription, dict):
+        return None
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    keys = subscription.get("keys") if isinstance(subscription.get("keys"), dict) else {}
+    auth = str(keys.get("auth") or "").strip()
+    p256dh = str(keys.get("p256dh") or "").strip()
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or len(endpoint) > 4096:
+        return None
+    if parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}:
+        return None
+    if not auth or not p256dh or len(auth) > 512 or len(p256dh) > 512:
+        return None
+    return {"endpoint": endpoint, "expirationTime": subscription.get("expirationTime"), "keys": {"auth": auth, "p256dh": p256dh}}
+
+
+def upsert_push_subscription(subscription: dict[str, Any], lang: str, timezone_name: str, target_url: str) -> str:
+    ensure_push_table()
+    now = datetime.now(UTC)
+    now_text = _iso_utc(now)
+    endpoint = subscription["endpoint"]
+    language = lang if lang in LANGUAGES else "en"
+    timezone_value = _safe_push_timezone(timezone_name)
+    target = _normalize_push_target(target_url)
+
+    existing: dict[str, Any] = {}
+    with push_db() as (connection, backend):
+        row = connection.execute(
+            _push_sql("SELECT timezone, next_send_utc FROM push_subscriptions WHERE endpoint = ?", backend),
+            (endpoint,),
+        ).fetchone()
+        existing = _row_dict(row)
+        next_send = next_push_time_utc(timezone_value, now)
+        if existing and existing.get("timezone") == timezone_value and existing.get("next_send_utc"):
+            try:
+                existing_due = _parse_utc(str(existing["next_send_utc"]))
+                if existing_due >= now - timedelta(hours=PUSH_DELIVERY_WINDOW_HOURS):
+                    next_send = existing_due
+            except (TypeError, ValueError):
+                pass
+        values = (
+            endpoint, json.dumps(subscription, separators=(",", ":")), language, timezone_value, target,
+            _iso_utc(next_send), None, 0, 1, now_text, now_text,
+        )
+        sql = """
+            INSERT INTO push_subscriptions (
+                endpoint, subscription_json, language, timezone, target_url, next_send_utc,
+                last_sent_local_date, failure_count, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(endpoint) DO UPDATE SET
+                subscription_json = excluded.subscription_json,
+                language = excluded.language,
+                timezone = excluded.timezone,
+                target_url = excluded.target_url,
+                next_send_utc = excluded.next_send_utc,
+                active = 1,
+                updated_at = excluded.updated_at
+        """
+        connection.execute(_push_sql(sql, backend), values)
+    return _iso_utc(next_send)
+
+
+def delete_push_subscription(endpoint: str) -> None:
+    if not endpoint or not (PUSH_DATABASE_URL or PUSH_SQLITE_PATH):
+        return
+    ensure_push_table()
+    with push_db() as (connection, backend):
+        connection.execute(_push_sql("DELETE FROM push_subscriptions WHERE endpoint = ?", backend), (endpoint,))
+
+
+def _reschedule_push(
+    endpoint: str,
+    when_utc: datetime,
+    failure_count: int | None = None,
+    claim_token: str | None = None,
+) -> None:
+    """Release a delivery claim and move the subscription to another attempt."""
+    with push_db() as (connection, backend):
+        values: list[Any] = [_iso_utc(when_utc), _iso_utc(datetime.now(UTC))]
+        assignments = "next_send_utc = ?, claim_token = NULL, claim_until_utc = NULL, updated_at = ?"
+        if failure_count is not None:
+            assignments += ", failure_count = ?"
+            values.append(failure_count)
+        sql = f"UPDATE push_subscriptions SET {assignments} WHERE endpoint = ?"
+        values.append(endpoint)
+        if claim_token:
+            sql += " AND claim_token = ?"
+            values.append(claim_token)
+        connection.execute(_push_sql(sql, backend), tuple(values))
+
+
+def _complete_push(
+    endpoint: str,
+    claim_token: str,
+    next_send_utc: datetime,
+    local_date: str,
+    completed_at: datetime,
+) -> None:
+    with push_db() as (connection, backend):
+        connection.execute(
+            _push_sql(
+                """
+                UPDATE push_subscriptions
+                SET next_send_utc = ?, last_sent_local_date = ?, failure_count = 0,
+                    claim_token = NULL, claim_until_utc = NULL, updated_at = ?
+                WHERE endpoint = ? AND claim_token = ?
+                """,
+                backend,
+            ),
+            (_iso_utc(next_send_utc), local_date, _iso_utc(completed_at), endpoint, claim_token),
+        )
+
+
+def claim_due_push_subscriptions(now_utc: datetime | None = None, limit: int = PUSH_MAX_BATCH) -> list[dict[str, Any]]:
+    """Lease due rows without marking them delivered.
+
+    A short lease prevents parallel jobs from sending duplicates. If a process
+    exits after claiming but before sending, the row becomes eligible again
+    after the lease expires instead of silently missing the entire day.
+    """
+    ensure_push_table()
+    now = (now_utc or datetime.now(UTC)).astimezone(UTC)
+    now_text = _iso_utc(now)
+    cutoff = now - timedelta(hours=PUSH_DELIVERY_WINDOW_HOURS)
+    cutoff_text = _iso_utc(cutoff)
+    claim_until_text = _iso_utc(now + timedelta(minutes=PUSH_CLAIM_MINUTES))
+    claimed: list[dict[str, Any]] = []
+
+    with push_db() as (connection, backend):
+        stale_rows = connection.execute(
+            _push_sql(
+                "SELECT endpoint, timezone, next_send_utc FROM push_subscriptions "
+                "WHERE active = 1 AND next_send_utc < ? LIMIT ?",
+                backend,
+            ),
+            (cutoff_text, limit),
+        ).fetchall()
+        for raw in stale_rows:
+            row = _row_dict(raw)
+            replacement = _iso_utc(next_push_time_utc(str(row.get("timezone") or "UTC"), now))
+            connection.execute(
+                _push_sql(
+                    """
+                    UPDATE push_subscriptions
+                    SET next_send_utc = ?, failure_count = 0, claim_token = NULL,
+                        claim_until_utc = NULL, updated_at = ?
+                    WHERE endpoint = ? AND next_send_utc = ?
+                    """,
+                    backend,
+                ),
+                (replacement, now_text, row["endpoint"], row["next_send_utc"]),
+            )
+
+        due_rows = connection.execute(
+            _push_sql(
+                """
+                SELECT endpoint, subscription_json, language, timezone, target_url, next_send_utc, failure_count
+                FROM push_subscriptions
+                WHERE active = 1 AND next_send_utc >= ? AND next_send_utc <= ?
+                  AND (claim_until_utc IS NULL OR claim_until_utc <= ?)
+                ORDER BY next_send_utc ASC
+                LIMIT ?
+                """,
+                backend,
+            ),
+            (cutoff_text, now_text, now_text, limit),
+        ).fetchall()
+        for raw in due_rows:
+            row = _row_dict(raw)
+            token = secrets.token_urlsafe(18)
+            cursor = connection.execute(
+                _push_sql(
+                    """
+                    UPDATE push_subscriptions
+                    SET claim_token = ?, claim_until_utc = ?, updated_at = ?
+                    WHERE endpoint = ? AND active = 1 AND next_send_utc = ?
+                      AND (claim_until_utc IS NULL OR claim_until_utc <= ?)
+                    """,
+                    backend,
+                ),
+                (token, claim_until_text, now_text, row["endpoint"], row["next_send_utc"], now_text),
+            )
+            if cursor.rowcount == 1:
+                row["claim_token"] = token
+                claimed.append(row)
+    return claimed
+
+
+def _retry_delay_minutes(exc: Exception) -> int:
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return max(1, min(180, math.ceil(float(retry_after) / 60)))
+    if isinstance(retry_after, str) and retry_after.strip().isdigit():
+        return max(1, min(180, math.ceil(int(retry_after.strip()) / 60)))
+    return PUSH_RETRY_MINUTES
+
+
+def send_due_push_notifications(now_utc: datetime | None = None) -> dict[str, int]:
+    if not push_feature_enabled():
+        raise RuntimeError("Daily push requires DATABASE_URL (or PUSH_DB_PATH), PUSH_SECRET, pywebpush and cryptography")
+    now = (now_utc or datetime.now(UTC)).astimezone(UTC)
+    vapid = push_vapid_config()
+    rows = claim_due_push_subscriptions(now)
+    results = {"due": len(rows), "sent": 0, "removed": 0, "retried": 0, "failed": 0}
+
+    for row in rows:
+        endpoint = str(row.get("endpoint") or "")
+        claim_token = str(row.get("claim_token") or "")
+        language = str(row.get("language") or "en")
+        timezone_name = _safe_push_timezone(str(row.get("timezone") or "UTC"))
+        try:
+            subscription = json.loads(str(row["subscription_json"]))
+            payload = {
+                "title": tr(language, "notification_title"),
+                "url": _normalize_push_target(row.get("target_url")),
+                "icon": "/icon-512.png",
+                "badge": "/badge-96.png",
+                "lang": language,
+                "timestamp": int(now.timestamp() * 1000),
+            }
+            webpush(
+                subscription_info=subscription,
+                data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                vapid_private_key=vapid["private"],
+                vapid_claims={"sub": vapid["subject"]},
+                ttl=6 * 60 * 60,
+                headers={"Urgency": "high", "Topic": "daily-panchang"},
+                timeout=12,
+            )
+            zone = ZoneInfo(timezone_name)
+            local_date = now.astimezone(zone).date().isoformat()
+            next_send = next_push_time_utc(timezone_name, now + timedelta(seconds=1))
+            _complete_push(endpoint, claim_token, next_send, local_date, now)
+            results["sent"] += 1
+        except WebPushException as exc:
+            response = getattr(exc, "response", None)
+            status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+            if status in {404, 410}:
+                delete_push_subscription(endpoint)
+                results["removed"] += 1
+                continue
+            failure_count = int(row.get("failure_count") or 0) + 1
+            local_now = now.astimezone(ZoneInfo(timezone_name))
+            if failure_count <= 3 and local_now.hour < 11:
+                _reschedule_push(
+                    endpoint,
+                    now + timedelta(minutes=_retry_delay_minutes(exc)),
+                    failure_count,
+                    claim_token,
+                )
+                results["retried"] += 1
+            else:
+                _reschedule_push(endpoint, next_push_time_utc(timezone_name, now), failure_count, claim_token)
+                results["failed"] += 1
+            app.logger.warning("Daily push failed with status %s", status, exc_info=app.debug)
+        except Exception:
+            failure_count = int(row.get("failure_count") or 0) + 1
+            local_now = now.astimezone(ZoneInfo(timezone_name))
+            if failure_count <= 3 and local_now.hour < 11:
+                _reschedule_push(endpoint, now + timedelta(minutes=PUSH_RETRY_MINUTES), failure_count, claim_token)
+                results["retried"] += 1
+            else:
+                _reschedule_push(endpoint, next_push_time_utc(timezone_name, now), failure_count, claim_token)
+                results["failed"] += 1
+            app.logger.exception("Daily push failed")
+    return results
+
+
+def validate_push_csrf() -> bool:
+    fetch_site = request.headers.get("Sec-Fetch-Site", "")
+    if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+        return False
+    cookie_token = request.cookies.get(PUSH_CSRF_COOKIE, "")
+    header_token = request.headers.get("X-Panchang-CSRF", "")
+    return bool(cookie_token and header_token and secrets.compare_digest(cookie_token, header_token))
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +732,14 @@ EN_TEXT = {
     "share_preview_help": "This is the image shown when this Panchang link is shared.",
     "share_image_alt": "Panchang social sharing image",
     "upcoming_values": "upcoming values",
+    "daily_prompt": "Need Daily Panchang?",
+    "yes": "Yes",
+    "notification_title": "Today's Panchang",
+    "notification_enabled": "Daily Panchang is enabled for 7:00 AM.",
+    "notification_blocked": "Notifications are blocked in this browser's settings.",
+    "notification_unavailable": "Daily notifications are not supported on this device or browser.",
+    "notification_error": "Daily notifications could not be enabled. Please try again.",
+    "notification_install_hint": "On iPhone or iPad, add this website to the Home Screen first.",
 }
 
 TEXT_OVERRIDES: dict[str, dict[str, str]] = {
@@ -381,6 +961,107 @@ SHARE_TEXT: dict[str, dict[str, str]] = {
 }
 for _language_code, _share_values in SHARE_TEXT.items():
     TEXT_OVERRIDES.setdefault(_language_code, {}).update(_share_values)
+
+PUSH_TEXT: dict[str, dict[str, str]] = {
+    "hi": {
+        "daily_prompt": "दैनिक पंचांग चाहिए?", "yes": "हाँ", "notification_title": "आज का पंचांग",
+        "notification_enabled": "प्रतिदिन सुबह 7:00 बजे पंचांग सूचना चालू है।",
+        "notification_blocked": "इस ब्राउज़र की सेटिंग में सूचनाएँ बंद हैं।",
+        "notification_unavailable": "इस डिवाइस या ब्राउज़र में दैनिक सूचनाएँ उपलब्ध नहीं हैं।",
+        "notification_error": "दैनिक सूचनाएँ चालू नहीं हो सकीं। कृपया फिर प्रयास करें।",
+        "notification_install_hint": "iPhone या iPad पर पहले इस वेबसाइट को होम स्क्रीन पर जोड़ें।",
+    },
+    "mr": {
+        "daily_prompt": "रोजचे पंचांग हवे?", "yes": "हो", "notification_title": "आजचे पंचांग",
+        "notification_enabled": "दररोज सकाळी 7:00 वाजताची पंचांग सूचना सुरू आहे।",
+        "notification_blocked": "या ब्राउझरच्या सेटिंगमध्ये सूचना बंद आहेत।",
+        "notification_unavailable": "या डिव्हाइस किंवा ब्राउझरवर दैनिक सूचना उपलब्ध नाहीत।",
+        "notification_error": "दैनिक सूचना सुरू करता आल्या नाहीत. पुन्हा प्रयत्न करा।",
+        "notification_install_hint": "iPhone किंवा iPad वर आधी ही वेबसाइट होम स्क्रीनवर जोडा।",
+    },
+    "gu": {
+        "daily_prompt": "દૈનિક પંચાંગ જોઈએ?", "yes": "હા", "notification_title": "આજનું પંચાંગ",
+        "notification_enabled": "દરરોજ સવારે 7:00 વાગ્યાની પંચાંગ સૂચના ચાલુ છે.",
+        "notification_blocked": "આ બ્રાઉઝરની સેટિંગમાં સૂચનાઓ બંધ છે.",
+        "notification_unavailable": "આ ઉપકરણ અથવા બ્રાઉઝરમાં દૈનિક સૂચનાઓ ઉપલબ્ધ નથી.",
+        "notification_error": "દૈનિક સૂચનાઓ ચાલુ થઈ શકી નથી. ફરી પ્રયત્ન કરો.",
+        "notification_install_hint": "iPhone અથવા iPad પર પહેલાં આ વેબસાઇટને હોમ સ્ક્રીન પર ઉમેરો.",
+    },
+    "bn": {
+        "daily_prompt": "দৈনিক পঞ্জিকা চান?", "yes": "হ্যাঁ", "notification_title": "আজকের পঞ্জিকা",
+        "notification_enabled": "প্রতিদিন সকাল ৭:০০টার পঞ্জিকা বিজ্ঞপ্তি চালু হয়েছে।",
+        "notification_blocked": "এই ব্রাউজারের সেটিংসে বিজ্ঞপ্তি বন্ধ রয়েছে।",
+        "notification_unavailable": "এই ডিভাইস বা ব্রাউজারে দৈনিক বিজ্ঞপ্তি সমর্থিত নয়।",
+        "notification_error": "দৈনিক বিজ্ঞপ্তি চালু করা যায়নি। আবার চেষ্টা করুন।",
+        "notification_install_hint": "iPhone বা iPad-এ আগে ওয়েবসাইটটি হোম স্ক্রিনে যোগ করুন।",
+    },
+    "ta": {
+        "daily_prompt": "தினசரி பஞ்சாங்கம் வேண்டுமா?", "yes": "ஆம்", "notification_title": "இன்றைய பஞ்சாங்கம்",
+        "notification_enabled": "தினமும் காலை 7:00 மணிக்கான பஞ்சாங்க அறிவிப்பு இயக்கப்பட்டது.",
+        "notification_blocked": "இந்த உலாவியின் அமைப்புகளில் அறிவிப்புகள் தடுக்கப்பட்டுள்ளன.",
+        "notification_unavailable": "இந்த சாதனம் அல்லது உலாவியில் தினசரி அறிவிப்புகள் ஆதரிக்கப்படவில்லை.",
+        "notification_error": "தினசரி அறிவிப்புகளை இயக்க முடியவில்லை. மீண்டும் முயலவும்.",
+        "notification_install_hint": "iPhone அல்லது iPad-ல் முதலில் இந்த இணையதளத்தை முகப்புத் திரையில் சேர்க்கவும்.",
+    },
+    "te": {
+        "daily_prompt": "రోజువారీ పంచాంగం కావాలా?", "yes": "అవును", "notification_title": "నేటి పంచాంగం",
+        "notification_enabled": "ప్రతిరోజూ ఉదయం 7:00 గంటల పంచాంగ నోటిఫికేషన్ ప్రారంభమైంది.",
+        "notification_blocked": "ఈ బ్రౌజర్ సెట్టింగుల్లో నోటిఫికేషన్లు నిరోధించబడ్డాయి.",
+        "notification_unavailable": "ఈ పరికరం లేదా బ్రౌజర్‌లో రోజువారీ నోటిఫికేషన్లు అందుబాటులో లేవు.",
+        "notification_error": "రోజువారీ నోటిఫికేషన్లు ప్రారంభించలేకపోయాము. మళ్లీ ప్రయత్నించండి.",
+        "notification_install_hint": "iPhone లేదా iPadలో ముందుగా ఈ వెబ్‌సైట్‌ను హోమ్ స్క్రీన్‌కు జోడించండి.",
+    },
+    "kn": {
+        "daily_prompt": "ದೈನಂದಿನ ಪಂಚಾಂಗ ಬೇಕೇ?", "yes": "ಹೌದು", "notification_title": "ಇಂದಿನ ಪಂಚಾಂಗ",
+        "notification_enabled": "ಪ್ರತಿದಿನ ಬೆಳಿಗ್ಗೆ 7:00 ಗಂಟೆಯ ಪಂಚಾಂಗ ಸೂಚನೆ ಸಕ್ರಿಯವಾಗಿದೆ.",
+        "notification_blocked": "ಈ ಬ್ರೌಸರ್ ಸೆಟ್ಟಿಂಗ್‌ಗಳಲ್ಲಿ ಸೂಚನೆಗಳನ್ನು ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ.",
+        "notification_unavailable": "ಈ ಸಾಧನ ಅಥವಾ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ದೈನಂದಿನ ಸೂಚನೆಗಳು ಲಭ್ಯವಿಲ್ಲ.",
+        "notification_error": "ದೈನಂದಿನ ಸೂಚನೆಗಳನ್ನು ಸಕ್ರಿಯಗೊಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+        "notification_install_hint": "iPhone ಅಥವಾ iPadನಲ್ಲಿ ಮೊದಲು ಈ ವೆಬ್‌ಸೈಟ್ ಅನ್ನು ಹೋಮ್ ಸ್ಕ್ರೀನ್‌ಗೆ ಸೇರಿಸಿ.",
+    },
+    "ml": {
+        "daily_prompt": "ദിവസേന പഞ്ചാംഗം വേണമോ?", "yes": "അതെ", "notification_title": "ഇന്നത്തെ പഞ്ചാംഗം",
+        "notification_enabled": "ദിവസേന രാവിലെ 7:00 മണിക്കുള്ള പഞ്ചാംഗ അറിയിപ്പ് സജീവമാണ്.",
+        "notification_blocked": "ഈ ബ്രൗസറിന്റെ ക്രമീകരണങ്ങളിൽ അറിയിപ്പുകൾ തടഞ്ഞിരിക്കുന്നു.",
+        "notification_unavailable": "ഈ ഉപകരണത്തിലോ ബ്രൗസറിലോ ദിവസേന അറിയിപ്പുകൾ ലഭ്യമല്ല.",
+        "notification_error": "ദിവസേന അറിയിപ്പുകൾ സജീവമാക്കാനായില്ല. വീണ്ടും ശ്രമിക്കുക.",
+        "notification_install_hint": "iPhone അല്ലെങ്കിൽ iPadൽ ആദ്യം ഈ വെബ്സൈറ്റ് ഹോം സ്ക്രീനിൽ ചേർക്കുക.",
+    },
+    "pa": {
+        "daily_prompt": "ਰੋਜ਼ਾਨਾ ਪੰਚਾਂਗ ਚਾਹੀਦਾ ਹੈ?", "yes": "ਹਾਂ", "notification_title": "ਅੱਜ ਦਾ ਪੰਚਾਂਗ",
+        "notification_enabled": "ਰੋਜ਼ ਸਵੇਰੇ 7:00 ਵਜੇ ਦੀ ਪੰਚਾਂਗ ਸੂਚਨਾ ਚਾਲੂ ਹੈ।",
+        "notification_blocked": "ਇਸ ਬ੍ਰਾਊਜ਼ਰ ਦੀਆਂ ਸੈਟਿੰਗਾਂ ਵਿੱਚ ਸੂਚਨਾਵਾਂ ਬੰਦ ਹਨ।",
+        "notification_unavailable": "ਇਸ ਡਿਵਾਈਸ ਜਾਂ ਬ੍ਰਾਊਜ਼ਰ ਵਿੱਚ ਰੋਜ਼ਾਨਾ ਸੂਚਨਾਵਾਂ ਉਪਲਬਧ ਨਹੀਂ ਹਨ।",
+        "notification_error": "ਰੋਜ਼ਾਨਾ ਸੂਚਨਾਵਾਂ ਚਾਲੂ ਨਹੀਂ ਹੋ ਸਕੀਆਂ। ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+        "notification_install_hint": "iPhone ਜਾਂ iPad ਉੱਤੇ ਪਹਿਲਾਂ ਇਸ ਵੈੱਬਸਾਈਟ ਨੂੰ ਹੋਮ ਸਕ੍ਰੀਨ ਵਿੱਚ ਜੋੜੋ।",
+    },
+    "or": {
+        "daily_prompt": "ଦୈନିକ ପଞ୍ଚାଙ୍ଗ ଚାହୁଁଛନ୍ତି କି?", "yes": "ହଁ", "notification_title": "ଆଜିର ପଞ୍ଚାଙ୍ଗ",
+        "notification_enabled": "ପ୍ରତିଦିନ ସକାଳ 7:00ଟାର ପଞ୍ଚାଙ୍ଗ ସୂଚନା ସକ୍ରିୟ ହୋଇଛି।",
+        "notification_blocked": "ଏହି ବ୍ରାଉଜର ସେଟିଂସ୍‌ରେ ସୂଚନା ବନ୍ଦ ଅଛି।",
+        "notification_unavailable": "ଏହି ଡିଭାଇସ୍ କିମ୍ବା ବ୍ରାଉଜରରେ ଦୈନିକ ସୂଚନା ଉପଲବ୍ଧ ନୁହେଁ।",
+        "notification_error": "ଦୈନିକ ସୂଚନା ସକ୍ରିୟ କରିହେଲା ନାହିଁ। ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।",
+        "notification_install_hint": "iPhone କିମ୍ବା iPadରେ ପ୍ରଥମେ ଏହି ୱେବସାଇଟକୁ ହୋମ୍ ସ୍କ୍ରିନ୍‌ରେ ଯୋଡନ୍ତୁ।",
+    },
+    "ne": {
+        "daily_prompt": "दैनिक पञ्चाङ्ग चाहिन्छ?", "yes": "हो", "notification_title": "आजको पञ्चाङ्ग",
+        "notification_enabled": "हरेक दिन बिहान ७:०० बजेको पञ्चाङ्ग सूचना सक्रिय छ।",
+        "notification_blocked": "यस ब्राउजरको सेटिङमा सूचनाहरू रोकिएका छन्।",
+        "notification_unavailable": "यस उपकरण वा ब्राउजरमा दैनिक सूचनाहरू उपलब्ध छैनन्।",
+        "notification_error": "दैनिक सूचनाहरू सक्रिय गर्न सकिएन। फेरि प्रयास गर्नुहोस्।",
+        "notification_install_hint": "iPhone वा iPad मा पहिले यो वेबसाइट होम स्क्रिनमा थप्नुहोस्।",
+    },
+    "sa": {
+        "daily_prompt": "दैनिकं पञ्चाङ्गम् इच्छति किम्?", "yes": "आम्", "notification_title": "अद्य पञ्चाङ्गम्",
+        "notification_enabled": "प्रतिदिनं प्रातः ७:०० वादने पञ्चाङ्गसूचना सक्रियाऽस्ति।",
+        "notification_blocked": "अस्य जालदर्शकस्य विन्यासेषु सूचनाः निरुद्धाः सन्ति।",
+        "notification_unavailable": "अस्मिन् उपकरणे वा जालदर्शके दैनिकसूचनाः न समर्थिताः।",
+        "notification_error": "दैनिकसूचनाः सक्रियाः कर्तुं न शक्यन्ते। पुनः प्रयतताम्।",
+        "notification_install_hint": "iPhone अथवा iPad मध्ये प्रथमम् एतत् जालस्थानं मुख्यपटले योजयतु।",
+    },
+}
+for _language_code, _push_values in PUSH_TEXT.items():
+    TEXT_OVERRIDES.setdefault(_language_code, {}).update(_push_values)
 
 
 def ui_text(lang: str) -> dict[str, str]:
@@ -1595,7 +2276,7 @@ def build_panchang(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def site_root() -> str:
-    configured = os.getenv("SITE_URL", "").strip().rstrip("/")
+    configured = (os.getenv("SITE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
     if configured:
         if not re.match(r"^https?://", configured, flags=re.IGNORECASE):
             configured = f"https://{configured}"
@@ -3169,12 +3850,74 @@ html[data-theme="dark"] .live-dot { color: var(--header-live); }
   box-shadow: 0 0 0 4px rgba(201, 255, 241, .15);
 }
 
+/* Daily Panchang opt-in: one clear decision, no competing copy. */
+.daily-prompt {
+  width: min(88vw, 370px); margin: auto; padding: 0; overflow: visible;
+  border: 1px solid rgba(63, 75, 128, .20); border-radius: 24px;
+  color: var(--text); background:
+    radial-gradient(110% 95% at 0% 0%, rgba(255, 220, 137, .20), transparent 52%),
+    radial-gradient(95% 100% at 100% 100%, rgba(72, 177, 177, .13), transparent 56%),
+    var(--surface-strong);
+  box-shadow: 0 28px 90px rgba(25, 34, 68, .30);
+}
+html[data-theme="dark"] .daily-prompt {
+  border-color: rgba(158, 174, 236, .24);
+  background:
+    radial-gradient(110% 95% at 0% 0%, rgba(245, 193, 82, .12), transparent 52%),
+    radial-gradient(95% 100% at 100% 100%, rgba(62, 174, 177, .12), transparent 56%),
+    #111a32;
+  box-shadow: 0 30px 100px rgba(0, 0, 0, .62);
+}
+.daily-prompt::backdrop {
+  background: rgba(24, 31, 54, .38);
+  backdrop-filter: blur(9px) saturate(.86);
+}
+.daily-prompt-card {
+  position: relative; display: grid; justify-items: center; gap: 18px;
+  padding: 30px 24px 23px; text-align: center;
+}
+.daily-prompt-close {
+  position: absolute; z-index: 2; top: 9px; right: 9px; width: 30px; height: 30px;
+  display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%;
+  color: var(--muted); background: rgba(255,255,255,.62); cursor: pointer;
+  font: 500 20px/1 inherit; transition: transform .15s ease, background .15s ease, color .15s ease;
+}
+html[data-theme="dark"] .daily-prompt-close { background: rgba(255,255,255,.07); }
+.daily-prompt-close:hover { color: var(--text); background: var(--surface-muted); transform: rotate(4deg); }
+.daily-prompt-mark {
+  width: 54px; aspect-ratio: 1; display: grid; place-items: center; border-radius: 17px;
+  color: #ffffff; background: linear-gradient(145deg, var(--header-mid), var(--header-end));
+  box-shadow: 0 12px 28px rgba(55, 76, 151, .22), inset 0 1px 0 rgba(255,255,255,.28);
+  font-size: 25px; line-height: 1;
+}
+.daily-prompt h2 {
+  max-width: 300px; margin: 0; padding-block: .08em; color: var(--text);
+  font-size: clamp(21px, 5.4vw, 27px); line-height: 1.28; font-weight: 650;
+  letter-spacing: -.026em; text-wrap: balance;
+}
+.daily-prompt-yes {
+  width: 100%; min-height: 49px; border: 1px solid rgba(47, 72, 154, .36); border-radius: 14px;
+  color: #ffffff; background: linear-gradient(112deg, var(--header-start), var(--header-mid) 55%, var(--header-end));
+  box-shadow: 0 10px 24px rgba(43, 61, 130, .20); cursor: pointer;
+  font: 650 16px/1.2 inherit; letter-spacing: -.006em;
+  transition: transform .15s ease, filter .15s ease, box-shadow .15s ease;
+}
+.daily-prompt-yes:hover { filter: brightness(1.05); transform: translateY(-1px); box-shadow: 0 13px 28px rgba(43, 61, 130, .24); }
+.daily-prompt-yes:active { transform: translateY(1px); }
+.daily-prompt-yes:disabled { cursor: wait; opacity: .72; transform: none; }
+.daily-prompt-yes:focus-visible, .daily-prompt-close:focus-visible { outline: 3px solid rgba(72, 91, 202, .28); outline-offset: 3px; }
+
+@media (max-width: 380px) {
+  .daily-prompt-card { gap: 15px; padding: 27px 18px 18px; }
+  .daily-prompt-mark { width: 48px; border-radius: 15px; font-size: 22px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
 
 @media (forced-colors: active) {
-  .moment, .metric-row, .day-carousel, .fab, .header-control, .settings-sheet { border: 1px solid CanvasText; }
+  .moment, .metric-row, .day-carousel, .fab, .header-control, .settings-sheet, .daily-prompt { border: 1px solid CanvasText; }
   .badge { border: 1px solid CanvasText; }
 }
 """
@@ -3185,6 +3928,24 @@ JS = r"""
 
   const initialNode = document.getElementById('initial-data');
   let state = JSON.parse(initialNode.textContent);
+  const pushConfig = Object.freeze({...((state && state.push) || {})});
+  const DAILY_VISIT_KEY = 'panchang-last-visit-v1';
+  const DAILY_PUSH_KEY = 'panchang-daily-push-v1';
+  let shouldOfferDailyPanchang = false;
+  try {
+    const now = Date.now();
+    const previousVisit = Number(localStorage.getItem(DAILY_VISIT_KEY) || 0);
+    const days = Math.max(1, Number(pushConfig.offer_after_days || 7));
+    shouldOfferDailyPanchang = !previousVisit || now - previousVisit >= days * 86400000;
+    localStorage.setItem(DAILY_VISIT_KEY, String(now));
+  } catch (_) {
+    try {
+      shouldOfferDailyPanchang = !sessionStorage.getItem(DAILY_VISIT_KEY);
+      sessionStorage.setItem(DAILY_VISIT_KEY, '1');
+    } catch (_) {
+      shouldOfferDailyPanchang = true;
+    }
+  }
   let settings = {
     place: state.query.place,
     slug: state.query.slug,
@@ -3221,6 +3982,10 @@ JS = r"""
   let lastDataMinute = `${settings.date}T${settings.time}`;
   let minuteRefreshTimer = 0;
   let minuteRefreshRetryTimer = 0;
+  let dailyPromptTimer = 0;
+  let serviceWorkerRegistrationPromise = null;
+  let pushSyncPromise = null;
+  let lastPushSyncAt = 0;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3247,6 +4012,9 @@ JS = r"""
   const ldJsonNode = $('#structuredData');
   const ogPreviewImage = $('#ogPreviewImage');
   const themeToggleButton = $('#themeToggleButton');
+  const dailyPrompt = $('#dailyPrompt');
+  const dailyPromptClose = $('#dailyPromptClose');
+  const dailyPromptYes = $('#dailyPromptYes');
 
   const cssEscape = window.CSS && typeof window.CSS.escape === 'function'
     ? window.CSS.escape.bind(window.CSS)
@@ -3269,6 +4037,193 @@ JS = r"""
     toastNode.classList.add('show');
     toastTimer = window.setTimeout(() => toastNode.classList.remove('show'), 3200);
   }
+
+  function isIosDevice() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  function isStandaloneApp() {
+    return window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+  }
+
+  function dailyPushCanBeOffered() {
+    if (!pushConfig.enabled || !pushConfig.public_key || !window.isSecureContext) return false;
+    if (!('serviceWorker' in navigator) || !('Notification' in window)) return false;
+    return 'PushManager' in window || isIosDevice();
+  }
+
+  function urlBase64ToUint8Array(value) {
+    const padding = '='.repeat((4 - value.length % 4) % 4);
+    const base64 = (value + padding).replaceAll('-', '+').replaceAll('_', '/');
+    const raw = window.atob(base64);
+    return Uint8Array.from([...raw].map(character => character.charCodeAt(0)));
+  }
+
+  function ensureServiceWorker() {
+    if (!('serviceWorker' in navigator)) return Promise.reject(new Error('Service workers are unavailable'));
+    if (!serviceWorkerRegistrationPromise) {
+      serviceWorkerRegistrationPromise = navigator.serviceWorker.register('/sw.js')
+        .then(() => navigator.serviceWorker.ready)
+        .catch(error => {
+          serviceWorkerRegistrationPromise = null;
+          throw error;
+        });
+    }
+    return serviceWorkerRegistrationPromise;
+  }
+
+  function deviceTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || settings.timezone || 'UTC';
+    } catch (_) {
+      return settings.timezone || 'UTC';
+    }
+  }
+
+  function dailyNotificationTargetUrl() {
+    const params = new URLSearchParams({
+      place: settings.place,
+      lat: String(settings.lat),
+      lon: String(settings.lon),
+      tz: settings.timezone,
+      lang: settings.language,
+      live: '1'
+    });
+    if (settings.country) params.set('country', settings.country);
+    return `/?${params.toString()}`;
+  }
+
+  async function storePushSubscription(subscription) {
+    const response = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-Panchang-CSRF': pushConfig.csrf || ''
+      },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      body: JSON.stringify({
+        subscription: subscription.toJSON(),
+        language: settings.language,
+        timezone: deviceTimezone(),
+        target_url: dailyNotificationTargetUrl()
+      })
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.error || `Push subscription failed: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async function syncDailyPushSubscription({force = false} = {}) {
+    if (!dailyPushCanBeOffered() || Notification.permission !== 'granted' || !('PushManager' in window)) return false;
+    if (!force && Date.now() - lastPushSyncAt < 3600000) return true;
+    if (pushSyncPromise) return pushSyncPromise;
+    pushSyncPromise = (async () => {
+      const registration = await ensureServiceWorker();
+      const subscription = await registration.pushManager.getSubscription();
+      if (!subscription) return false;
+      await storePushSubscription(subscription);
+      lastPushSyncAt = Date.now();
+      try { localStorage.setItem(DAILY_PUSH_KEY, '1'); } catch (_) { /* Storage is optional. */ }
+      return true;
+    })().catch(error => {
+      console.warn('Daily Panchang push sync failed', error);
+      return false;
+    }).finally(() => { pushSyncPromise = null; });
+    return pushSyncPromise;
+  }
+
+  function closeDailyPrompt() {
+    window.clearTimeout(dailyPromptTimer);
+    if (!dailyPrompt) return;
+    if (typeof dailyPrompt.close === 'function' && dailyPrompt.open) dailyPrompt.close();
+    else dailyPrompt.removeAttribute('open');
+  }
+
+  function scheduleDailyPrompt(delay = 1800) {
+    window.clearTimeout(dailyPromptTimer);
+    dailyPromptTimer = window.setTimeout(() => maybeOfferDailyPanchang(), delay);
+  }
+
+  async function maybeOfferDailyPanchang() {
+    if (!shouldOfferDailyPanchang || !dailyPrompt || !dailyPushCanBeOffered()) return;
+    if (Notification.permission === 'denied') return;
+    if (document.visibilityState !== 'visible' || dialog.open) {
+      scheduleDailyPrompt(1800);
+      return;
+    }
+    try {
+      if ('PushManager' in window) {
+        const registration = await ensureServiceWorker();
+        const existing = await registration.pushManager.getSubscription();
+        if (existing) {
+          await syncDailyPushSubscription({force: true});
+          return;
+        }
+      }
+    } catch (error) {
+      console.warn('Could not inspect push subscription', error);
+    }
+    if (typeof dailyPrompt.showModal === 'function') dailyPrompt.showModal();
+    else dailyPrompt.setAttribute('open', '');
+  }
+
+  async function enableDailyPanchang() {
+    if (!dailyPromptYes) return;
+    dailyPromptYes.disabled = true;
+    try {
+      if (isIosDevice() && !isStandaloneApp()) {
+        closeDailyPrompt();
+        showToast(state.ui.notification_install_hint || state.ui.notification_unavailable);
+        return;
+      }
+      if (!dailyPushCanBeOffered() || !('PushManager' in window)) {
+        closeDailyPrompt();
+        showToast(state.ui.notification_unavailable);
+        return;
+      }
+      const permission = Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+      if (permission !== 'granted') {
+        closeDailyPrompt();
+        showToast(state.ui.notification_blocked);
+        return;
+      }
+      const registration = await ensureServiceWorker();
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(pushConfig.public_key)
+        });
+      }
+      await storePushSubscription(subscription);
+      lastPushSyncAt = Date.now();
+      shouldOfferDailyPanchang = false;
+      try { localStorage.setItem(DAILY_PUSH_KEY, '1'); } catch (_) { /* Storage is optional. */ }
+      closeDailyPrompt();
+      showToast(state.ui.notification_enabled);
+    } catch (error) {
+      console.error('Daily Panchang notification setup failed', error);
+      showToast(state.ui.notification_error);
+    } finally {
+      dailyPromptYes.disabled = false;
+    }
+  }
+
+  dailyPromptYes?.addEventListener('click', enableDailyPanchang);
+  dailyPromptClose?.addEventListener('click', closeDailyPrompt);
+  dailyPrompt?.addEventListener('cancel', event => {
+    event.preventDefault();
+    closeDailyPrompt();
+  });
+  dailyPrompt?.addEventListener('click', event => {
+    if (event.target === dailyPrompt) closeDailyPrompt();
+  });
 
   function updateThemeToggle() {
     if (!themeToggleButton) return;
@@ -3454,6 +4409,7 @@ JS = r"""
     editButton.dataset.tooltip = state.ui.edit;
     editButton.setAttribute('aria-label', state.ui.edit);
     closeButton.setAttribute('aria-label', state.ui.close);
+    if (dailyPromptClose) dailyPromptClose.setAttribute('aria-label', state.ui.close);
     previousDayButton.setAttribute('aria-label', state.ui.previous_day);
     nextDayButton.setAttribute('aria-label', state.ui.next_day);
     liveIndicator.textContent = state.ui.live;
@@ -3628,6 +4584,7 @@ JS = r"""
       lastDataMinute = `${settings.date}T${settings.time}`;
       savePreferences();
       updateHistory(historyMode);
+      syncDailyPushSubscription().catch(() => undefined);
       return true;
     } catch (error) {
       console.error(error);
@@ -4116,8 +5073,8 @@ JS = r"""
     if (!alreadyUjjain) await fetchPanchang(0, 'replace', {showMask: false});
   }
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => undefined));
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
+    window.addEventListener('load', () => ensureServiceWorker().catch(() => undefined));
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -4126,6 +5083,7 @@ JS = r"""
     if (settings.live && (Date.now() - lastDataFetch >= 55000 || currentZonedMinuteKey() !== lastDataMinute)) {
       minuteRefresh({force: true});
     }
+    if (shouldOfferDailyPanchang && !dailyPrompt?.open) scheduleDailyPrompt(900);
   });
 
   // A browser may restore the page from its back-forward cache without a new
@@ -4142,7 +5100,10 @@ JS = r"""
   window.setInterval(liveTick, 15000);
   liveTick();
   scheduleMinuteRefresh();
-  personalizeInitialView();
+  Promise.resolve(personalizeInitialView()).finally(async () => {
+    await syncDailyPushSubscription({force: true});
+    if (shouldOfferDailyPanchang) scheduleDailyPrompt(1800);
+  });
 })();
 """
 
@@ -4805,6 +5766,11 @@ FAVICON_B64 = (
     "GdVpmrct+LR/m3kyR86Db7S8nYEnstw3Wn9JIjcWdQq+g3lnBD/TPI02YBbgM7zJTSCwEVoT+Flx/lMA33gkxf8BQJ5IpkQP8eYA"
     "AAAASUVORK5CYII="
 )
+
+BADGE_96_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAACV0lEQVR42u2cUZIDIQhEo7X3v7L7k49UqrI1s6GhxdcXEHgiMDE+HgghhBAq0djR6LXW+ujQGFv5NNmDAAAAAgAAEAAAgAAAALQxgL8m1E6K9HNGG9UdQrSfU7EjukJQ+DmU6bjbh7EKP6fKqE6ZoPTzKwBXyO8O4Yr9ZRnQHYI6+GFFuCOEjOCHFOFso7usIQGg6BZCWr3gdSO7u5GVvneNVhxZETZEt9ayPv3V+DtGZ9SK/9qjmGukg9Jaa101uqJI37FNNVRaTKqVHVL1tD5PDr7D+vNk5y0ycDenlUNfxXE0dgl+1gyRDWG4Bz8iIBVrWgK4EwhFEKrXt+yCMp13/IFouO3+b4ps9NCXAWyesPOdM2G67P707sPkNwwuZnXPAMfd75QFZMAJNcC5IB7/NZQMKDz/o3ef6iOcsg78RC2YlcpXbqm52HIlTlsdQVcd3ukOEjUAAABoqfUUADapGwAQdlrO2TAqd983AY2GmD2zpABwhfC+blXwPw5iOx9Hzl9fLWtA9NnscAv7+C5oPOW++1MAVP7oEfGRTQ2s/Rzwmg1cSzEqji72WGVAVkF0Gspm5lHgEBynS1m2NUAFwfFzBLeji2sR/w8onhP4h0zxkFbaFzudyVUzwjzRaSc7uBnX+WacW8/tOJvwVoTIj1IAvJZSCID3ggoB8GJWIYDdfot18WcS/PyJOxRAx+BnQpgEvxaC9OXcLm9HK/0MCVBGv1zRImb4KXk5t9Or6Wo/Z7RxXYOv8nMqd0h3CHYAEAAAgAAAAAQAACAAAAAhhBBCn/ULQlDsrFpJMjEAAAAASUVORK5CYII="
+)
+
 
 OG_IMAGE_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAABLAAAAJ2CAIAAADAIuwLAAEAAElEQVR42uyddXwURxvHZy8Xd3cXkkAEd3d3CpS2SKGUOpQafeul"
@@ -6138,6 +7104,15 @@ HTML_TEMPLATE = r"""<!doctype html>
     </form>
   </dialog>
 
+  <dialog class="daily-prompt" id="dailyPrompt" aria-labelledby="dailyPromptTitle">
+    <div class="daily-prompt-card">
+      <button class="daily-prompt-close" id="dailyPromptClose" type="button" aria-label="{{ data.ui.close }}">×</button>
+      <span class="daily-prompt-mark" aria-hidden="true">☼</span>
+      <h2 id="dailyPromptTitle" data-i18n="daily_prompt">{{ data.ui.daily_prompt }}</h2>
+      <button class="daily-prompt-yes" id="dailyPromptYes" type="button" data-i18n="yes" autofocus>{{ data.ui.yes }}</button>
+    </div>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loading-mask" id="loadingMask" aria-hidden="true"><span class="spinner"></span></div>
   <noscript><div class="noscript-card">The Panchang is fully visible without JavaScript. Enable JavaScript only for swiping, live time, place search and editing.</div></noscript>
@@ -6185,6 +7160,15 @@ def page_response(path_lang: str | None = None, place_slug: str | None = None, d
         return plain_not_found()
 
     data, seo, jsonld = build_payload(context)
+    push_csrf = request.cookies.get(PUSH_CSRF_COOKIE) or secrets.token_urlsafe(24)
+    vapid = push_vapid_config()
+    data["push"] = {
+        "enabled": push_feature_enabled(),
+        "public_key": vapid.get("public", "") if push_feature_enabled() else "",
+        "csrf": push_csrf,
+        "offer_after_days": PUSH_OFFER_AFTER_DAYS,
+        "delivery_hour": PUSH_HOUR_LOCAL,
+    }
     nonce = secrets.token_urlsafe(18)
     rendered = PAGE_TEMPLATE.render(
         context=context,
@@ -6226,6 +7210,15 @@ def page_response(path_lang: str | None = None, place_slug: str | None = None, d
     response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    response.set_cookie(
+        PUSH_CSRF_COOKIE,
+        push_csrf,
+        max_age=400 * 24 * 60 * 60,
+        secure=request.is_secure,
+        httponly=False,
+        samesite="Strict",
+        path="/",
+    )
     return response
 
 
@@ -6279,6 +7272,53 @@ def panchang_api() -> Response:
         response.status_code = 500
         response.headers["Cache-Control"] = "no-store"
         return response
+
+
+def _push_json(payload: dict[str, Any], status: int = 200) -> Response:
+    response = jsonify(payload)
+    response.status_code = status
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    return response
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe_api() -> Response:
+    if not push_feature_enabled():
+        return _push_json({"error": "Daily push is not configured on the server."}, 503)
+    if not validate_push_csrf():
+        return _push_json({"error": "The subscription request could not be verified."}, 403)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _push_json({"error": "A JSON request body is required."}, 400)
+    subscription = _valid_push_subscription(payload.get("subscription"))
+    if subscription is None:
+        return _push_json({"error": "The browser push subscription is invalid."}, 400)
+    language = str(payload.get("language") or "en").lower().split("-")[0]
+    timezone_name = str(payload.get("timezone") or "UTC")[:100]
+    target_url = _normalize_push_target(payload.get("target_url"))
+    try:
+        next_send = upsert_push_subscription(subscription, language, timezone_name, target_url)
+    except Exception:
+        app.logger.exception("Could not save a Web Push subscription")
+        return _push_json({"error": "The daily notification subscription could not be saved."}, 503)
+    return _push_json({"ok": True, "next_send_utc": next_send, "local_hour": PUSH_HOUR_LOCAL}, 201)
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe_api() -> Response:
+    if not validate_push_csrf():
+        return _push_json({"error": "The unsubscribe request could not be verified."}, 403)
+    payload = request.get_json(silent=True) or {}
+    endpoint = str(payload.get("endpoint") or "").strip()
+    if endpoint:
+        try:
+            delete_push_subscription(endpoint)
+        except Exception:
+            app.logger.exception("Could not remove a Web Push subscription")
+            return _push_json({"error": "The subscription could not be removed."}, 503)
+    return _push_json({"ok": True})
 
 
 def normalized_search(value: str) -> str:
@@ -6712,7 +7752,7 @@ def web_manifest() -> Response:
 def service_worker() -> Response:
     script = rf"""'use strict';
 const CACHE = 'panchang-shell-{APP_VERSION}';
-const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/favicon.ico'];
+const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/badge-96.png', '/favicon.ico'];
 self.addEventListener('install', event => {{
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 }});
@@ -6739,6 +7779,36 @@ self.addEventListener('fetch', event => {{
       return response;
     }})));
   }}
+}});
+self.addEventListener('push', event => {{
+  let payload = {{}};
+  try {{ payload = event.data ? event.data.json() : {{}}; }} catch (_) {{ payload = {{}}; }}
+  const title = payload.title || "Today's Panchang";
+  const options = {{
+    icon: payload.icon || '/icon-512.png',
+    badge: payload.badge || '/badge-96.png',
+    tag: 'daily-panchang',
+    renotify: false,
+    silent: false,
+    timestamp: Number(payload.timestamp) || Date.now(),
+    lang: payload.lang || 'en',
+    data: {{url: payload.url || '/'}}
+  }};
+  event.waitUntil(self.registration.showNotification(title, options));
+}});
+self.addEventListener('notificationclick', event => {{
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || '/', self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({{type: 'window', includeUncontrolled: true}}).then(async clientList => {{
+    for (const client of clientList) {{
+      try {{
+        if (new URL(client.url).origin !== self.location.origin) continue;
+        if ('navigate' in client) await client.navigate(target);
+        return client.focus();
+      }} catch (_) {{ /* Try another matching client. */ }}
+    }}
+    return self.clients.openWindow ? self.clients.openWindow(target) : undefined;
+  }}));
 }});
 """
     response = Response(script, mimetype="application/javascript")
@@ -7185,6 +8255,11 @@ def icon_512() -> Response:
     return embedded_asset(ICON_512_B64, "image/png", "panchang-512.png")
 
 
+@app.get("/badge-96.png")
+def badge_96() -> Response:
+    return embedded_asset(BADGE_96_B64, "image/png", "panchang-badge-96.png")
+
+
 @app.get("/og.png")
 @app.get("/og/<snapshot>.png")
 @app.get("/og/<path_lang>/<snapshot>.png")
@@ -7362,7 +8437,7 @@ When quoting data, include the place, coordinates, IANA timezone, local date/tim
 
 @app.get("/health")
 def health() -> Response:
-    response = jsonify({"status": "ok", "app": APP_NAME, "version": APP_VERSION, "time": datetime.now(UTC).isoformat()})
+    response = jsonify({"status": "ok", "app": APP_NAME, "version": APP_VERSION, "time": datetime.now(UTC).isoformat(), "daily_push_configured": push_feature_enabled()})
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
@@ -7370,6 +8445,18 @@ def health() -> Response:
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "10000"))
-    debug = os.getenv("FLASK_DEBUG", "0") in {"1", "true", "True", "yes"}
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    command = sys.argv[1] if len(sys.argv) > 1 else "serve"
+    if command == "send-daily-push":
+        try:
+            print(json.dumps(send_due_push_notifications(), sort_keys=True))
+        except Exception as exc:
+            app.logger.exception("Daily push job failed")
+            print(json.dumps({"error": str(exc)}))
+            raise SystemExit(1)
+    elif command == "init-push-db":
+        ensure_push_table()
+        print(json.dumps({"status": "ok", "push_enabled": push_feature_enabled()}))
+    else:
+        port = int(os.getenv("PORT", "10000"))
+        debug = os.getenv("FLASK_DEBUG", "0") in {"1", "true", "True", "yes"}
+        app.run(host="0.0.0.0", port=port, debug=debug)
