@@ -87,7 +87,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 # All public, shareable and crawler-facing URLs use the custom domain.  Render's
 # temporary hostname is intentionally never exposed in canonical, Open Graph,
@@ -107,6 +107,16 @@ def _configured_public_site_url() -> str:
 
 
 PUBLIC_SITE_URL = _configured_public_site_url()
+CONTACT_EMAIL = (os.getenv("CONTACT_EMAIL") or "contact@panchangworld.com").strip()
+LEGAL_LAST_UPDATED = date(2026, 9, 16)
+LEGAL_PAGE_SLUGS = (
+    "about",
+    "privacy-policy",
+    "terms-and-conditions",
+    "contact",
+    "disclaimer",
+    "cookie-policy",
+)
 DEFAULT_PLACE = {
     "name": "Ujjain",
     "latitude": 23.1765,
@@ -1082,6 +1092,112 @@ PUSH_TEXT: dict[str, dict[str, str]] = {
 for _language_code, _push_values in PUSH_TEXT.items():
     TEXT_OVERRIDES.setdefault(_language_code, {}).update(_push_values)
 
+LEGAL_UI_TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "legal_information": "Information & policies",
+        "about_us": "About Us",
+        "privacy_policy": "Privacy Policy",
+        "terms_conditions": "Terms & Conditions",
+        "contact_us": "Contact Us",
+        "disclaimer": "Disclaimer",
+        "cookie_policy": "Cookie Policy",
+        "back_to_panchang": "Back to Panchang",
+        "last_updated": "Last updated",
+        "official_resources": "Official choices and resources",
+        "legal_language_note": "To avoid legal ambiguity, the detailed policy below is provided in English. Contact us if you need clarification.",
+        "email_us": "Email us",
+        "contact_email_label": "Contact email",
+    },
+    "hi": {
+        "legal_information": "जानकारी और नीतियाँ", "about_us": "हमारे बारे में", "privacy_policy": "गोपनीयता नीति",
+        "terms_conditions": "नियम व शर्तें", "contact_us": "संपर्क करें", "disclaimer": "अस्वीकरण",
+        "cookie_policy": "कुकी नीति", "back_to_panchang": "पंचांग पर वापस", "last_updated": "अंतिम अपडेट",
+        "official_resources": "आधिकारिक विकल्प और संसाधन", "legal_language_note": "कानूनी अस्पष्टता से बचने के लिए विस्तृत नीति नीचे अंग्रेज़ी में दी गई है। स्पष्टीकरण के लिए हमसे संपर्क करें।",
+        "email_us": "ईमेल करें", "contact_email_label": "संपर्क ईमेल",
+    },
+    "mr": {
+        "legal_information": "माहिती आणि धोरणे", "about_us": "आमच्याबद्दल", "privacy_policy": "गोपनीयता धोरण",
+        "terms_conditions": "अटी व शर्ती", "contact_us": "संपर्क", "disclaimer": "अस्वीकरण",
+        "cookie_policy": "कुकी धोरण", "back_to_panchang": "पंचांगाकडे परत", "last_updated": "शेवटचे अद्यतन",
+        "official_resources": "अधिकृत पर्याय आणि साधने", "legal_language_note": "कायदेशीर अस्पष्टता टाळण्यासाठी सविस्तर धोरण खाली इंग्रजीत दिले आहे. स्पष्टीकरणासाठी आमच्याशी संपर्क साधा।",
+        "email_us": "ईमेल करा", "contact_email_label": "संपर्क ईमेल",
+    },
+    "gu": {
+        "legal_information": "માહિતી અને નીતિઓ", "about_us": "અમારા વિશે", "privacy_policy": "ગોપનીયતા નીતિ",
+        "terms_conditions": "નિયમો અને શરતો", "contact_us": "સંપર્ક કરો", "disclaimer": "અસ્વીકરણ",
+        "cookie_policy": "કૂકી નીતિ", "back_to_panchang": "પંચાંગ પર પાછા", "last_updated": "છેલ્લું અપડેટ",
+        "official_resources": "અધિકૃત વિકલ્પો અને સાધનો", "legal_language_note": "કાનૂની અસ્પષ્ટતા ટાળવા માટે વિગતવાર નીતિ નીચે અંગ્રેજીમાં આપવામાં આવી છે. સ્પષ્ટતા માટે અમારો સંપર્ક કરો.",
+        "email_us": "ઈમેલ કરો", "contact_email_label": "સંપર્ક ઈમેલ",
+    },
+    "bn": {
+        "legal_information": "তথ্য ও নীতিমালা", "about_us": "আমাদের সম্পর্কে", "privacy_policy": "গোপনীয়তা নীতি",
+        "terms_conditions": "শর্তাবলি", "contact_us": "যোগাযোগ", "disclaimer": "দায়-অস্বীকার",
+        "cookie_policy": "কুকি নীতি", "back_to_panchang": "পঞ্জিকায় ফিরুন", "last_updated": "সর্বশেষ হালনাগাদ",
+        "official_resources": "সরকারি বিকল্প ও তথ্যসূত্র", "legal_language_note": "আইনি অস্পষ্টতা এড়াতে বিস্তারিত নীতিটি নিচে ইংরেজিতে দেওয়া হয়েছে। ব্যাখ্যার জন্য আমাদের সঙ্গে যোগাযোগ করুন।",
+        "email_us": "ইমেল করুন", "contact_email_label": "যোগাযোগের ইমেল",
+    },
+    "ta": {
+        "legal_information": "தகவல் மற்றும் கொள்கைகள்", "about_us": "எங்களைப் பற்றி", "privacy_policy": "தனியுரிமைக் கொள்கை",
+        "terms_conditions": "விதிமுறைகள் மற்றும் நிபந்தனைகள்", "contact_us": "தொடர்பு கொள்ள", "disclaimer": "பொறுப்புத் துறப்பு",
+        "cookie_policy": "குக்கீ கொள்கை", "back_to_panchang": "பஞ்சாங்கத்திற்குத் திரும்பு", "last_updated": "கடைசியாக புதுப்பிக்கப்பட்டது",
+        "official_resources": "அதிகாரப்பூர்வ விருப்பங்கள் மற்றும் ஆதாரங்கள்", "legal_language_note": "சட்டத் தெளிவின்மையைத் தவிர்க்க விரிவான கொள்கை கீழே ஆங்கிலத்தில் வழங்கப்பட்டுள்ளது. விளக்கம் தேவைப்பட்டால் எங்களைத் தொடர்பு கொள்ளுங்கள்.",
+        "email_us": "மின்னஞ்சல் அனுப்பவும்", "contact_email_label": "தொடர்பு மின்னஞ்சல்",
+    },
+    "te": {
+        "legal_information": "సమాచారం మరియు విధానాలు", "about_us": "మా గురించి", "privacy_policy": "గోప్యతా విధానం",
+        "terms_conditions": "నిబంధనలు మరియు షరతులు", "contact_us": "సంప్రదించండి", "disclaimer": "నిరాకరణ",
+        "cookie_policy": "కుకీ విధానం", "back_to_panchang": "పంచాంగానికి తిరిగి", "last_updated": "చివరిగా నవీకరించబడింది",
+        "official_resources": "అధికారిక ఎంపికలు మరియు వనరులు", "legal_language_note": "చట్టపరమైన అస్పష్టతను నివారించేందుకు వివరణాత్మక విధానం క్రింద ఆంగ్లంలో ఇవ్వబడింది. స్పష్టత కోసం మమ్మల్ని సంప్రదించండి.",
+        "email_us": "ఇమెయిల్ చేయండి", "contact_email_label": "సంప్రదింపు ఇమెయిల్",
+    },
+    "kn": {
+        "legal_information": "ಮಾಹಿತಿ ಮತ್ತು ನೀತಿಗಳು", "about_us": "ನಮ್ಮ ಬಗ್ಗೆ", "privacy_policy": "ಗೌಪ್ಯತಾ ನೀತಿ",
+        "terms_conditions": "ನಿಯಮಗಳು ಮತ್ತು ಷರತ್ತುಗಳು", "contact_us": "ಸಂಪರ್ಕಿಸಿ", "disclaimer": "ಹಕ್ಕುತ್ಯಾಗ",
+        "cookie_policy": "ಕುಕಿ ನೀತಿ", "back_to_panchang": "ಪಂಚಾಂಗಕ್ಕೆ ಹಿಂತಿರುಗಿ", "last_updated": "ಕೊನೆಯ ನವೀಕರಣ",
+        "official_resources": "ಅಧಿಕೃತ ಆಯ್ಕೆಗಳು ಮತ್ತು ಸಂಪನ್ಮೂಲಗಳು", "legal_language_note": "ಕಾನೂನು ಅಸ್ಪಷ್ಟತೆಯನ್ನು ತಪ್ಪಿಸಲು ವಿವರವಾದ ನೀತಿಯನ್ನು ಕೆಳಗೆ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ನೀಡಲಾಗಿದೆ. ಸ್ಪಷ್ಟೀಕರಣಕ್ಕಾಗಿ ನಮ್ಮನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+        "email_us": "ಇಮೇಲ್ ಮಾಡಿ", "contact_email_label": "ಸಂಪರ್ಕ ಇಮೇಲ್",
+    },
+    "ml": {
+        "legal_information": "വിവരങ്ങളും നയങ്ങളും", "about_us": "ഞങ്ങളെക്കുറിച്ച്", "privacy_policy": "സ്വകാര്യതാ നയം",
+        "terms_conditions": "നിബന്ധനകളും വ്യവസ്ഥകളും", "contact_us": "ബന്ധപ്പെടുക", "disclaimer": "നിരാകരണം",
+        "cookie_policy": "കുക്കി നയം", "back_to_panchang": "പഞ്ചാംഗത്തിലേക്ക് മടങ്ങുക", "last_updated": "അവസാനം പുതുക്കിയത്",
+        "official_resources": "ഔദ്യോഗിക തിരഞ്ഞെടുപ്പുകളും വിഭവങ്ങളും", "legal_language_note": "നിയമപരമായ ആശയക്കുഴപ്പം ഒഴിവാക്കാൻ വിശദമായ നയം താഴെ ഇംഗ്ലീഷിൽ നൽകിയിരിക്കുന്നു. വിശദീകരണത്തിന് ഞങ്ങളെ ബന്ധപ്പെടുക.",
+        "email_us": "ഇമെയിൽ ചെയ്യുക", "contact_email_label": "ബന്ധപ്പെടാനുള്ള ഇമെയിൽ",
+    },
+    "pa": {
+        "legal_information": "ਜਾਣਕਾਰੀ ਅਤੇ ਨੀਤੀਆਂ", "about_us": "ਸਾਡੇ ਬਾਰੇ", "privacy_policy": "ਪਰਦੇਦਾਰੀ ਨੀਤੀ",
+        "terms_conditions": "ਨਿਯਮ ਅਤੇ ਸ਼ਰਤਾਂ", "contact_us": "ਸੰਪਰਕ ਕਰੋ", "disclaimer": "ਬੇਦਾਅਵਾ",
+        "cookie_policy": "ਕੂਕੀ ਨੀਤੀ", "back_to_panchang": "ਪੰਚਾਂਗ ਵੱਲ ਵਾਪਸ", "last_updated": "ਆਖਰੀ ਅੱਪਡੇਟ",
+        "official_resources": "ਅਧਿਕਾਰਤ ਵਿਕਲਪ ਅਤੇ ਸਰੋਤ", "legal_language_note": "ਕਾਨੂੰਨੀ ਅਸਪਸ਼ਟਤਾ ਤੋਂ ਬਚਣ ਲਈ ਵਿਸਤ੍ਰਿਤ ਨੀਤੀ ਹੇਠਾਂ ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਦਿੱਤੀ ਗਈ ਹੈ। ਵਿਆਖਿਆ ਲਈ ਸਾਡੇ ਨਾਲ ਸੰਪਰਕ ਕਰੋ।",
+        "email_us": "ਈਮੇਲ ਕਰੋ", "contact_email_label": "ਸੰਪਰਕ ਈਮੇਲ",
+    },
+    "or": {
+        "legal_information": "ସୂଚନା ଓ ନୀତି", "about_us": "ଆମ ବିଷୟରେ", "privacy_policy": "ଗୋପନୀୟତା ନୀତି",
+        "terms_conditions": "ନିୟମ ଓ ସର୍ତ୍ତାବଳୀ", "contact_us": "ଯୋଗାଯୋଗ", "disclaimer": "ଦାୟିତ୍ୱ ଅସ୍ୱୀକାର",
+        "cookie_policy": "କୁକି ନୀତି", "back_to_panchang": "ପଞ୍ଚାଙ୍ଗକୁ ଫେରନ୍ତୁ", "last_updated": "ଶେଷ ଅଦ୍ୟତନ",
+        "official_resources": "ଅଧିକୃତ ବିକଳ୍ପ ଓ ସମ୍ବଳ", "legal_language_note": "ଆଇନଗତ ଅସ୍ପଷ୍ଟତା ଏଡାଇବା ପାଇଁ ବିସ୍ତୃତ ନୀତି ନିମ୍ନରେ ଇଂରାଜୀରେ ଦିଆଯାଇଛି। ସ୍ପଷ୍ଟତା ପାଇଁ ଆମ ସହ ଯୋଗାଯୋଗ କରନ୍ତୁ।",
+        "email_us": "ଇମେଲ୍ କରନ୍ତୁ", "contact_email_label": "ଯୋଗାଯୋଗ ଇମେଲ୍",
+    },
+    "ne": {
+        "legal_information": "जानकारी र नीतिहरू", "about_us": "हाम्रो बारेमा", "privacy_policy": "गोपनीयता नीति",
+        "terms_conditions": "नियम तथा सर्तहरू", "contact_us": "सम्पर्क", "disclaimer": "अस्वीकरण",
+        "cookie_policy": "कुकी नीति", "back_to_panchang": "पञ्चाङ्गमा फर्कनुहोस्", "last_updated": "अन्तिम अद्यावधिक",
+        "official_resources": "आधिकारिक विकल्प र स्रोतहरू", "legal_language_note": "कानुनी अस्पष्टता हटाउन विस्तृत नीति तल अङ्ग्रेजीमा दिइएको छ। स्पष्टीकरणका लागि हामीलाई सम्पर्क गर्नुहोस्।",
+        "email_us": "इमेल गर्नुहोस्", "contact_email_label": "सम्पर्क इमेल",
+    },
+    "sa": {
+        "legal_information": "सूचना नीतयश्च", "about_us": "अस्माकं विषये", "privacy_policy": "गोपनीयता-नीतिः",
+        "terms_conditions": "नियमाः शर्ताश्च", "contact_us": "सम्पर्कः", "disclaimer": "अस्वीकरणम्",
+        "cookie_policy": "कुकी-नीतिः", "back_to_panchang": "पञ्चाङ्गं प्रत्यागच्छतु", "last_updated": "अन्तिमम् अद्यतनम्",
+        "official_resources": "आधिकारिकाः विकल्पाः साधनानि च", "legal_language_note": "विधिक-सन्देहस्य परिहारार्थं विस्तृता नीतिः अधः आङ्ग्लभाषया प्रदत्ता अस्ति। स्पष्टीकरणाय अस्माभिः सम्पर्कं करोतु।",
+        "email_us": "ईपत्रं प्रेषयतु", "contact_email_label": "सम्पर्क-ईपत्रम्",
+    },
+}
+EN_TEXT.update(LEGAL_UI_TEXT["en"])
+for _language_code, _legal_values in LEGAL_UI_TEXT.items():
+    if _language_code != "en":
+        TEXT_OVERRIDES.setdefault(_language_code, {}).update(_legal_values)
+
 
 def ui_text(lang: str) -> dict[str, str]:
     result = dict(EN_TEXT)
@@ -1091,6 +1207,246 @@ def ui_text(lang: str) -> dict[str, str]:
 
 def tr(lang: str, key: str) -> str:
     return ui_text(lang).get(key, EN_TEXT.get(key, key))
+
+
+LEGAL_PAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "about": {
+        "ui_key": "about_us",
+        "schema_type": "AboutPage",
+        "description": "Learn how Panchang World calculates and presents a clear, location-aware daily Hindu Panchang.",
+        "intro": "Panchang World is a focused daily reference for people who want clear Panchang timings for their own place and local time.",
+        "sections": [
+            {
+                "title": "What we provide",
+                "paragraphs": [
+                    "The website shows local sunrise and sunset, Tithi, Nakshatra, Yoga, Karana, Choghadiya, Hora, important daily periods and Lagna. Each timeline includes earlier, current and upcoming values with real start and end times.",
+                    "The interface is designed as a one-screen daily tool with readable text, horizontal timelines, multiple Indian languages, light and dark appearance options, location selection and an optional 7:00 AM daily notification.",
+                ],
+            },
+            {
+                "title": "Calculation approach",
+                "paragraphs": [
+                    "Calculations use Lahiri ayanamsa, Swiss Ephemeris Moshier planetary positions, the selected coordinates and IANA timezone, local astronomical sunrise and sunset, and traditional divisions for Choghadiya, planetary Hora and Muhurta periods.",
+                    "Panchang traditions can differ by region, lineage and religious authority. The website therefore presents a consistent computational reference, not a claim that one regional practice is the only valid practice.",
+                ],
+            },
+            {
+                "title": "Accessibility and trust",
+                "paragraphs": [
+                    "We aim to keep timings readable on phones, tablets and computers, disclose the calculation method, distinguish auspicious and inauspicious highlights without overwhelming colour, and keep advertising visually separate from Panchang information.",
+                    "Advertisements and third-party services do not determine or alter Panchang calculations. Report suspected errors, translation problems or accessibility issues through the Contact page.",
+                ],
+            },
+        ],
+    },
+    "privacy-policy": {
+        "ui_key": "privacy_policy",
+        "schema_type": "WebPage",
+        "description": "Privacy information for Panchang World, including location, settings, notifications, cookies and Google advertising.",
+        "intro": "This policy explains what information Panchang World processes, why it is used, and the choices available to you.",
+        "sections": [
+            {
+                "title": "Information processed when you use the site",
+                "paragraphs": [
+                    "The web server and hosting provider may process standard request information such as IP address, browser type, requested URL, timestamps and security logs. This information is used to deliver the service, prevent abuse, diagnose failures and protect the website.",
+                    "Your selected language, theme, place, date, time, live-date preference, notification-offer state and similar interface settings may be stored in your browser using local storage or first-party storage so the site can remember your choices.",
+                ],
+            },
+            {
+                "title": "Location and place search",
+                "paragraphs": [
+                    "Precise device location is requested only after you choose to use your location and your browser asks for permission. Coordinates are used to calculate the local Panchang and may be sent to this website's server for reverse geocoding and calculation.",
+                    "Place search or reverse geocoding may use third-party data services such as Open-Meteo/GeoNames, OpenStreetMap Nominatim or a configured fallback provider. Those providers may receive the search text or coordinates needed to return a place name. You can deny location permission and enter a place manually; Ujjain is the fallback location when no place is available.",
+                ],
+            },
+            {
+                "title": "Daily push notifications",
+                "paragraphs": [
+                    "Daily notifications are optional. If you choose Yes and grant browser permission, the service stores the browser push endpoint and encryption keys, selected language, timezone and destination URL needed to deliver the 7:00 AM notification. It does not use that subscription to send unrelated marketing messages.",
+                    "You can disable notifications in your browser or operating-system settings. Expired subscriptions are removed automatically, and you may contact us to request deletion of an active subscription that you can identify.",
+                ],
+            },
+            {
+                "title": "Google advertising and third parties",
+                "paragraphs": [
+                    "Panchang World uses Google AdSense. Third-party vendors, including Google, may use cookies, web beacons, IP addresses or other identifiers to serve, measure and personalise advertisements based on visits to this and other websites. Google's advertising cookies enable Google and its partners to serve ads based on previous visits.",
+                    "You can manage personalised advertising in Google Ads Settings or use industry opt-out tools where available. Non-personalised advertising may still require cookies or similar technologies for delivery, frequency control, fraud prevention and reporting. Where required by law, a consent or privacy-choice message may be shown before eligible advertising technologies are used.",
+                ],
+            },
+            {
+                "title": "Sharing, retention and security",
+                "paragraphs": [
+                    "Information is shared only as needed with hosting, security, geocoding, push-delivery and advertising providers, or when required by law. We do not sell personal information. Browser-stored settings remain until you clear them; push subscription data remains until you unsubscribe, the endpoint expires or it is deleted; operational logs are retained according to hosting and security needs.",
+                    "Reasonable safeguards are used, but no internet service can promise absolute security or uninterrupted availability. Data may be processed in countries where service providers operate and may therefore be subject to different data-protection rules.",
+                ],
+            },
+            {
+                "title": "Your choices, children and changes",
+                "paragraphs": [
+                    "You can deny or revoke location and notification permissions, clear site data, switch off live date mode, use manual inputs, block cookies in your browser, manage advertising choices and contact us about a privacy request. Some features may not work after certain storage or permission choices are disabled.",
+                    "The service is intended for a general audience and is not directed to children under 13. If you believe a child has provided personal information, contact us. This policy may be updated when features, providers or legal requirements change; the date shown on the page identifies the current version.",
+                ],
+            },
+        ],
+        "resources": [
+            {"label": "Google Ads Settings", "url": "https://adssettings.google.com/"},
+            {"label": "How Google uses data on partner sites", "url": "https://policies.google.com/technologies/partner-sites"},
+            {"label": "Industry advertising choices", "url": "https://www.aboutads.info/choices/"},
+        ],
+    },
+    "terms-and-conditions": {
+        "ui_key": "terms_conditions",
+        "schema_type": "WebPage",
+        "description": "Terms governing use of the Panchang World website, API, calculations and related services.",
+        "intro": "By using Panchang World, you agree to use the website responsibly and understand the limits of a computed Panchang reference.",
+        "sections": [
+            {
+                "title": "Service and acceptance",
+                "paragraphs": [
+                    "These terms apply to the Panchang World website, installable web application, JSON API, social images and notification features. If you do not agree, do not use the service. You must use the service lawfully and must not attempt to disrupt, overload, scrape abusively, reverse-engineer security controls or interfere with other users.",
+                ],
+            },
+            {
+                "title": "Panchang information",
+                "paragraphs": [
+                    "The service provides traditional calendrical information calculated from the selected coordinates, timezone, date and time. Differences can arise from regional conventions, sunrise definitions, ephemeris settings, ayanamsa choices, daylight-saving rules, data sources or software updates.",
+                    "The information is a reference and is not a substitute for advice from a qualified priest, astrologer or other trusted practitioner for weddings, ceremonies, travel, medical decisions, legal matters, financial decisions or any other high-consequence activity.",
+                ],
+            },
+            {
+                "title": "Accounts, notifications and user choices",
+                "paragraphs": [
+                    "The main Panchang does not require an account. Optional notifications depend on browser permission, a valid push subscription and third-party push infrastructure. Delivery at exactly 7:00 AM cannot be guaranteed because devices, battery controls, network availability and operating systems can delay or suppress notifications.",
+                ],
+            },
+            {
+                "title": "Intellectual property and permitted use",
+                "paragraphs": [
+                    "You may use the website for personal reference and link to its public pages. The application design, original text, branding and code remain protected by applicable intellectual-property rights and software licences. The astronomical dependency has its own licence terms. Do not present the service or its branding as your own, remove notices, or commercially redistribute substantial portions without permission and without complying with applicable licences.",
+                ],
+            },
+            {
+                "title": "Third-party services, links and advertisements",
+                "paragraphs": [
+                    "The service may rely on hosting, geocoding, browser push services, mapping data, Google advertising and other third parties. Their services and policies are outside our control. An advertisement or external link does not mean that Panchang World endorses the advertiser, product, claim or destination.",
+                ],
+            },
+            {
+                "title": "Availability, warranties and liability",
+                "paragraphs": [
+                    "The service is provided on an as-is and as-available basis. We do not promise that every calculation, translation, location name, notification, API response or external service will always be accurate, complete, timely or available.",
+                    "To the fullest extent permitted by applicable law, Panchang World and its operators are not liable for indirect, incidental, special, consequential or reliance-based loss arising from use of, or inability to use, the service. Mandatory consumer rights that cannot lawfully be excluded remain unaffected.",
+                ],
+            },
+            {
+                "title": "Changes and contact",
+                "paragraphs": [
+                    "Features and these terms may change. Continued use after an updated version is published means you accept the revised terms. Questions or concerns can be sent through the Contact page. Disputes are subject to applicable law and any mandatory protections available where you live.",
+                ],
+            },
+        ],
+    },
+    "contact": {
+        "ui_key": "contact_us",
+        "schema_type": "ContactPage",
+        "description": "Contact Panchang World about calculations, translations, privacy, accessibility, notifications or technical issues.",
+        "intro": "Use the email below for a clear, direct way to reach Panchang World.",
+        "sections": [
+            {
+                "title": "What to include",
+                "paragraphs": [
+                    "For a calculation or timing issue, include the page URL, place, coordinates if known, timezone, date, displayed time, language and a screenshot. For a translation issue, include the original and the wording you believe is clearer.",
+                    "For privacy or notification requests, describe the browser or device involved and the action you want. Do not send passwords, payment details, identity documents or other unnecessary sensitive information.",
+                ],
+            },
+            {
+                "title": "Response and urgent matters",
+                "paragraphs": [
+                    "We aim to review legitimate messages as soon as reasonably possible, but no fixed response time is guaranteed. This contact channel is not an emergency service and should not be used for urgent medical, legal, safety or religious decisions.",
+                ],
+            },
+        ],
+        "email_cta": True,
+    },
+    "disclaimer": {
+        "ui_key": "disclaimer",
+        "schema_type": "WebPage",
+        "description": "Important limitations and responsible-use guidance for Panchang World calculations and content.",
+        "intro": "Panchang World is a practical reference, not a guarantee or a replacement for qualified personal guidance.",
+        "sections": [
+            {
+                "title": "Traditional and computational information",
+                "paragraphs": [
+                    "Panchang values are computed from astronomical and traditional rules. Different communities and authorities may use different ayanamsa, sunrise conventions, fasting rules, festival boundaries, Muhurta methods or regional practices. A difference from another calendar does not automatically mean either source is defective.",
+                ],
+            },
+            {
+                "title": "Verify important decisions",
+                "paragraphs": [
+                    "Before a wedding, Sanskara, property ceremony, major journey, fast, religious observance or other important event, verify the timing with a qualified practitioner who understands your tradition and location. Do not rely on the website as medical, legal, financial, emergency or investment advice.",
+                ],
+            },
+            {
+                "title": "Accuracy and availability",
+                "paragraphs": [
+                    "Although care is taken, errors can result from incorrect device location, timezone databases, geocoding, polar sunrise conditions, daylight-saving transitions, translation, software defects, external services or future data changes. The website and notifications may be delayed, unavailable or changed without notice.",
+                ],
+            },
+            {
+                "title": "External content and advertising",
+                "paragraphs": [
+                    "Third-party links, geocoding results and advertisements are provided or delivered by other organisations. Their presence does not constitute endorsement. Review the destination's own terms, privacy practices and claims before acting.",
+                ],
+            },
+            {
+                "title": "Limitation and corrections",
+                "paragraphs": [
+                    "Use the service at your own discretion. To the fullest extent allowed by law, the operator is not responsible for loss caused by reliance on the displayed information. Mandatory rights remain unaffected. Please report a reproducible issue through the Contact page so it can be investigated.",
+                ],
+            },
+        ],
+    },
+    "cookie-policy": {
+        "ui_key": "cookie_policy",
+        "schema_type": "WebPage",
+        "description": "How Panchang World uses first-party storage, browser settings and Google advertising cookies.",
+        "intro": "This page explains cookies and similar browser storage used by Panchang World and its advertising providers.",
+        "sections": [
+            {
+                "title": "First-party storage",
+                "paragraphs": [
+                    "The site may set a first-party security cookie used to verify push-subscription requests. It can remain for up to 400 days unless you delete it. The website also uses browser local storage for choices such as theme, language, place, live-date preference, notification-offer timing and related interface state.",
+                    "Local storage is technically different from a cookie but serves a similar remembering function. Clearing site data in your browser removes these saved choices and may make the website ask for them again.",
+                ],
+            },
+            {
+                "title": "Google AdSense and third-party storage",
+                "paragraphs": [
+                    "Google and other authorised advertising vendors may place or read cookies, use web beacons, IP addresses or similar identifiers when ads are requested, delivered or measured. These technologies can support personalised advertising, non-personalised advertising, frequency limits, fraud prevention, reporting and ad performance.",
+                    "Google's use of advertising cookies allows Google and its partners to serve ads based on visits to this site or other sites. The duration and operation of third-party cookies are controlled by those providers, not by Panchang World.",
+                ],
+            },
+            {
+                "title": "Your controls",
+                "paragraphs": [
+                    "You can block or delete cookies and local storage through browser settings, revoke site permissions and manage personalised advertising through Google Ads Settings. Some features, including remembered preferences, notifications or advertising, may work differently after storage is blocked.",
+                    "Where required, you may be shown a consent or privacy-choice message. Your choices can be changed through the relevant message or provider controls when available.",
+                ],
+            },
+            {
+                "title": "Updates and questions",
+                "paragraphs": [
+                    "This policy may change when storage technologies, providers or legal requirements change. Review the last-updated date and contact us if you have a question about a specific cookie or browser-stored value.",
+                ],
+            },
+        ],
+        "resources": [
+            {"label": "Google Ads Settings", "url": "https://adssettings.google.com/"},
+            {"label": "Google advertising technologies", "url": "https://policies.google.com/technologies/ads"},
+            {"label": "Industry advertising choices", "url": "https://www.aboutads.info/choices/"},
+        ],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -2853,7 +3209,22 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "@id": publisher_id,
             "name": APP_NAME,
             "url": root,
+            "email": CONTACT_EMAIL,
             "logo": {"@type": "ImageObject", "url": f"{root}/icon-512.png", "width": 512, "height": 512},
+            "contactPoint": {
+                "@type": "ContactPoint",
+                "contactType": "customer support",
+                "email": CONTACT_EMAIL,
+                "url": f"{root}/en/contact",
+                "availableLanguage": list(LANGUAGES.keys()),
+            },
+            "publishingPrinciples": f"{root}/en/about",
+            "subjectOf": [
+                {"@type": "WebPage", "name": "Privacy Policy", "url": f"{root}/en/privacy-policy"},
+                {"@type": "WebPage", "name": "Terms & Conditions", "url": f"{root}/en/terms-and-conditions"},
+                {"@type": "WebPage", "name": "Cookie Policy", "url": f"{root}/en/cookie-policy"},
+                {"@type": "ContactPage", "name": "Contact Us", "url": f"{root}/en/contact"},
+            ],
         },
         social_image,
         {
@@ -2911,6 +3282,7 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "url": f"{root}/api/panchang",
             "description": "Machine-readable live Panchang timelines for a selected place and date.",
             "documentation": f"{root}/openapi.json",
+            "termsOfService": f"{root}/en/terms-and-conditions",
             "serviceType": "Panchang calculation API",
             "provider": {"@id": publisher_id},
             "areaServed": "Worldwide",
@@ -2949,6 +3321,14 @@ def build_jsonld(context: dict[str, Any], data: dict[str, Any], seo: dict[str, A
             "thumbnailUrl": seo["og_image"],
             "speakable": {"@type": "SpeakableSpecification", "cssSelector": ["#currentHeaderText", ".metric-row"]},
             "breadcrumb": {"@id": f"{seo['canonical']}#breadcrumb"},
+            "significantLink": [
+                f"{root}/en/about",
+                f"{root}/en/privacy-policy",
+                f"{root}/en/terms-and-conditions",
+                f"{root}/en/contact",
+                f"{root}/en/disclaimer",
+                f"{root}/en/cookie-policy",
+            ],
             "potentialAction": [
                 {"@type": "ViewAction", "target": seo["canonical"], "name": f"View Panchang for {context['place']}"},
                 {"@type": "ReadAction", "target": seo["canonical"]},
@@ -4398,9 +4778,47 @@ html[data-theme="dark"] .daily-prompt-close { background: rgba(255,255,255,.07);
 }
 html[data-theme="dark"] .seo-copy { background: rgba(255,255,255,.035); }
 
+.legal-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.legal-links a {
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-muted) 82%, transparent);
+  text-align: center;
+  text-decoration: none;
+  font-size: 10.5px;
+  line-height: 1.22;
+  font-weight: 560;
+  overflow-wrap: anywhere;
+  transition: border-color .15s ease, color .15s ease, background .15s ease, transform .15s ease;
+}
+.legal-links a:hover,
+.legal-links a:focus-visible {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--surface-strong);
+  outline: none;
+  transform: translateY(-1px);
+}
+html[data-theme="dark"] .legal-links a { background: rgba(255,255,255,.035); }
+
 @media (max-width: 560px) {
   .settings-sheet { width: calc(100vw - 20px); }
   .seo-copy { font-size: 10.5px; line-height: 1.5; }
+  .legal-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .legal-links a { font-size: 10.25px; min-height: 31px; }
 }
 """
 
@@ -15754,6 +16172,15 @@ HTML_TEMPLATE = r"""<!doctype html>
 
         <button class="location-button" id="locationButton" type="button" data-i18n="use_location">{{ data.ui.use_location }}</button>
 
+        <nav class="legal-links" aria-label="{{ data.ui.legal_information }}">
+          <a href="{{ root }}/{{ context.lang }}/about" target="_blank" rel="noopener">{{ data.ui.about_us }}</a>
+          <a href="{{ root }}/{{ context.lang }}/privacy-policy" target="_blank" rel="noopener">{{ data.ui.privacy_policy }}</a>
+          <a href="{{ root }}/{{ context.lang }}/terms-and-conditions" target="_blank" rel="noopener">{{ data.ui.terms_conditions }}</a>
+          <a href="{{ root }}/{{ context.lang }}/contact" target="_blank" rel="noopener">{{ data.ui.contact_us }}</a>
+          <a href="{{ root }}/{{ context.lang }}/disclaimer" target="_blank" rel="noopener">{{ data.ui.disclaimer }}</a>
+          <a href="{{ root }}/{{ context.lang }}/cookie-policy" target="_blank" rel="noopener">{{ data.ui.cookie_policy }}</a>
+        </nav>
+
         <figure class="share-preview" aria-label="{{ data.ui.share_image_alt }}">
           <div class="share-preview-frame">
             <img id="ogPreviewImage" src="{{ seo.og_image }}" alt="{{ seo.image_alt }}" width="1200" height="630" loading="eager" decoding="async">
@@ -15790,6 +16217,214 @@ HTML_TEMPLATE = r"""<!doctype html>
 TEMPLATE_ENV = Environment(loader=BaseLoader(), autoescape=True)
 PAGE_TEMPLATE = TEMPLATE_ENV.from_string(HTML_TEMPLATE)
 
+LEGAL_CSS = r"""
+:root {
+  color-scheme: light;
+  --bg: #eef2f8;
+  --surface: rgba(255,255,255,.92);
+  --surface-soft: #f6f8fc;
+  --text: #182033;
+  --muted: #647087;
+  --line: #dce3ef;
+  --accent: #4257b2;
+  --accent-2: #137f88;
+  --shadow: 0 24px 70px rgba(28,42,77,.13);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c1621;
+  --surface: rgba(17,31,45,.94);
+  --surface-soft: #132438;
+  --text: #eef5ff;
+  --muted: #adbacb;
+  --line: #294158;
+  --accent: #8ea2ff;
+  --accent-2: #66d0d5;
+  --shadow: 0 28px 80px rgba(0,0,0,.34);
+}
+* { box-sizing: border-box; }
+html { min-height: 100%; background: var(--bg); }
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 10% -10%, rgba(82,105,207,.18), transparent 34rem),
+    radial-gradient(circle at 92% 4%, rgba(27,151,159,.13), transparent 30rem),
+    var(--bg);
+  font-family: "Segoe UI Variable", "Aptos", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Noto Sans", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+.legal-topbar {
+  width: min(1080px, calc(100% - 28px));
+  margin: 18px auto 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px 10px 15px;
+  border: 1px solid rgba(255,255,255,.32);
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(118deg, #35488f 0%, #3f5db2 52%, #16777e 100%);
+  box-shadow: 0 18px 46px rgba(43,61,116,.18);
+}
+.legal-brand { display:flex; align-items:center; gap:10px; min-width:0; color:#fff; text-decoration:none; font-size:16px; font-weight:720; letter-spacing:-.01em; }
+.legal-brand-mark { width:34px; height:34px; display:grid; place-items:center; flex:0 0 auto; border:1px solid rgba(255,255,255,.42); border-radius:11px; background:rgba(255,255,255,.12); font-size:19px; }
+.legal-top-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0; }
+.legal-language {
+  max-width: 160px;
+  height: 36px;
+  border: 1px solid rgba(255,255,255,.34);
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(8,22,54,.18);
+  padding: 0 30px 0 10px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.legal-language option { color:#111827; background:#fff; }
+.legal-back { min-height:36px; display:flex; align-items:center; padding:0 11px; border:1px solid rgba(255,255,255,.34); border-radius:10px; color:#fff; background:rgba(255,255,255,.10); text-decoration:none; font-size:12px; font-weight:650; white-space:nowrap; }
+.legal-shell { width:min(940px, calc(100% - 28px)); margin:20px auto 42px; }
+.legal-card { padding:clamp(22px, 4vw, 48px); border:1px solid var(--line); border-radius:24px; background:var(--surface); box-shadow:var(--shadow); backdrop-filter:blur(16px); }
+.legal-kicker { display:inline-flex; align-items:center; min-height:28px; padding:5px 10px; border:1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius:999px; color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); font-size:11px; font-weight:720; letter-spacing:.045em; text-transform:uppercase; }
+.legal-card h1 { max-width:760px; margin:15px 0 10px; font-size:clamp(30px, 5vw, 52px); line-height:1.03; letter-spacing:-.045em; font-weight:730; }
+.legal-intro { max-width:760px; margin:0; color:var(--muted); font-size:clamp(15px, 2vw, 18px); line-height:1.62; }
+.legal-meta { margin-top:13px; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+.translation-note { margin:18px 0 0; padding:12px 14px; border-inline-start:3px solid var(--accent-2); border-radius:0 12px 12px 0; color:var(--muted); background:color-mix(in srgb, var(--accent-2) 7%, var(--surface-soft)); font-size:13px; line-height:1.55; }
+.legal-content { margin-top:clamp(25px, 4vw, 38px); }
+.legal-section { padding:24px 0; border-top:1px solid var(--line); }
+.legal-section:first-child { border-top:0; padding-top:0; }
+.legal-section h2 { margin:0 0 10px; font-size:clamp(18px, 2.4vw, 23px); line-height:1.2; letter-spacing:-.025em; font-weight:690; }
+.legal-section p { margin:9px 0 0; color:var(--muted); font-size:15px; line-height:1.75; }
+.legal-resources { margin-top:4px; padding:18px; border:1px solid var(--line); border-radius:16px; background:var(--surface-soft); }
+.legal-resources h2 { margin:0 0 11px; font-size:16px; }
+.legal-resource-links { display:flex; flex-wrap:wrap; gap:8px; }
+.legal-resource-links a { padding:8px 10px; border:1px solid var(--line); border-radius:9px; color:var(--accent); background:var(--surface); text-decoration:none; font-size:12px; font-weight:630; }
+.legal-resource-links a:hover, .legal-resource-links a:focus-visible { border-color:var(--accent); outline:none; }
+.legal-email-card { margin-top:18px; padding:18px; border:1px solid color-mix(in srgb, var(--accent-2) 34%, var(--line)); border-radius:16px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--surface-soft)), color-mix(in srgb, var(--accent-2) 8%, var(--surface-soft))); }
+.legal-email-label { color:var(--muted); font-size:12px; }
+.legal-email { display:inline-block; margin-top:5px; color:var(--text); font-size:clamp(17px, 3vw, 23px); font-weight:700; text-decoration:none; overflow-wrap:anywhere; }
+.legal-email:hover { color:var(--accent); }
+.legal-nav { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:14px; }
+.legal-nav a { min-height:44px; display:flex; align-items:center; justify-content:center; padding:8px; border:1px solid var(--line); border-radius:12px; color:var(--muted); background:var(--surface); text-align:center; text-decoration:none; font-size:12px; line-height:1.25; font-weight:620; }
+.legal-nav a[aria-current="page"] { color:var(--text); border-color:color-mix(in srgb, var(--accent) 48%, var(--line)); background:color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.legal-footer { margin-top:16px; color:var(--muted); text-align:center; font-size:11px; line-height:1.5; }
+@media (max-width:700px) {
+  .legal-topbar { width:calc(100% - 18px); margin-top:9px; border-radius:15px; }
+  .legal-brand span:last-child { display:none; }
+  .legal-language { max-width:126px; }
+  .legal-shell { width:calc(100% - 18px); margin-top:10px; }
+  .legal-card { padding:21px 17px; border-radius:18px; }
+  .legal-card h1 { font-size:32px; }
+  .legal-section { padding:20px 0; }
+  .legal-section p { font-size:14px; line-height:1.68; }
+  .legal-nav { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto!important; transition:none!important; } }
+@media (forced-colors: active) { .legal-topbar, .legal-card, .legal-nav a, .legal-resources { border:1px solid CanvasText; } }
+"""
+
+LEGAL_HTML_TEMPLATE = r"""<!doctype html>
+<html lang="{{ lang }}" dir="ltr" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="google-adsense-account" content="ca-pub-4357913188792813">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#35488f">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="{{ robots }}">
+  <meta name="googlebot" content="{{ robots }}">
+  <meta name="description" content="{{ page.description }}">
+  <meta name="author" content="{{ app_name }}">
+  <title>{{ title }} | {{ app_name }}</title>
+  <link rel="canonical" href="{{ canonical }}">
+  {% if lang != 'en' %}<link rel="alternate" hreflang="en" href="{{ canonical }}">{% endif %}
+  <link rel="manifest" href="{{ root }}/manifest.webmanifest">
+  <link rel="icon" href="{{ root }}/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="{{ root }}/icon-192.png">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ app_name }}">
+  <meta property="og:title" content="{{ title }} | {{ app_name }}">
+  <meta property="og:description" content="{{ page.description }}">
+  <meta property="og:url" content="{{ current_url }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ title }} | {{ app_name }}">
+  <meta name="twitter:description" content="{{ page.description }}">
+  <script nonce="{{ nonce }}">try{document.documentElement.dataset.theme=localStorage.getItem('panchang-theme')==='dark'?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}</script>
+  <style nonce="{{ nonce }}">{{ legal_css | safe }}</style>
+  <script type="application/ld+json" nonce="{{ nonce }}">{{ jsonld_json | safe }}</script>
+</head>
+<body>
+  <header class="legal-topbar">
+    <a class="legal-brand" href="{{ root }}/" aria-label="{{ app_name }}">
+      <span class="legal-brand-mark" aria-hidden="true">☼</span><span>{{ app_name }}</span>
+    </a>
+    <div class="legal-top-actions">
+      <select class="legal-language" id="legalLanguage" aria-label="{{ ui.language }}">
+        {% for language in languages %}<option value="{{ language.code }}"{% if language.code == lang %} selected{% endif %}>{{ language.native }}</option>{% endfor %}
+      </select>
+      <a class="legal-back" href="{{ root }}/">← {{ ui.back_to_panchang }}</a>
+    </div>
+  </header>
+
+  <main class="legal-shell">
+    <article class="legal-card">
+      <span class="legal-kicker">{{ ui.legal_information }}</span>
+      <h1>{{ title }}</h1>
+      <p class="legal-intro" lang="en">{{ page.intro }}</p>
+      <div class="legal-meta">{{ ui.last_updated }}: {{ last_updated }}</div>
+      {% if lang != 'en' %}<p class="translation-note" lang="{{ lang }}">{{ ui.legal_language_note }}</p>{% endif %}
+
+      <div class="legal-content" lang="en">
+        {% for section in page.sections %}
+        <section class="legal-section">
+          <h2>{{ section.title }}</h2>
+          {% for paragraph in section.paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+        </section>
+        {% endfor %}
+
+        {% if page.resources %}
+        <section class="legal-resources">
+          <h2>{{ ui.official_resources }}</h2>
+          <div class="legal-resource-links">
+            {% for resource in page.resources %}<a href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.label }}</a>{% endfor %}
+          </div>
+        </section>
+        {% endif %}
+
+        {% if page.email_cta %}
+        <section class="legal-email-card">
+          <div class="legal-email-label">{{ ui.contact_email_label }}</div>
+          <a class="legal-email" href="mailto:{{ contact_email }}?subject=Panchang%20World%20support">{{ contact_email }}</a>
+        </section>
+        {% endif %}
+      </div>
+    </article>
+
+    <nav class="legal-nav" aria-label="{{ ui.legal_information }}">
+      {% for item in legal_nav %}<a href="{{ root }}/{{ lang }}/{{ item.slug }}"{% if item.slug == slug %} aria-current="page"{% endif %}>{{ item.title }}</a>{% endfor %}
+    </nav>
+    <footer class="legal-footer">© {{ year }} {{ app_name }} · {{ contact_email }}</footer>
+  </main>
+
+  <script nonce="{{ nonce }}">
+    (() => {
+      const select = document.getElementById('legalLanguage');
+      if (!select) return;
+      select.addEventListener('change', () => {
+        window.location.href = {{ root_json | safe }} + '/' + encodeURIComponent(select.value) + '/' + {{ slug_json | safe }};
+      });
+    })();
+  </script>
+</body>
+</html>
+"""
+LEGAL_PAGE_TEMPLATE = TEMPLATE_ENV.from_string(LEGAL_HTML_TEMPLATE)
+
 
 # ---------------------------------------------------------------------------
 # HTTP helpers and routes
@@ -15807,6 +16442,136 @@ def build_payload(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
 
 def plain_not_found() -> Response:
     return Response("Not found", status=404, mimetype="text/plain")
+
+
+def legal_page_jsonld(lang: str, slug: str, page: dict[str, Any], title: str, current_url: str, canonical: str) -> dict[str, Any]:
+    root = site_root()
+    publisher_id = f"{root}#publisher"
+    website_id = f"{root}#website"
+    page_id = f"{current_url}#webpage"
+    breadcrumb_id = f"{current_url}#breadcrumb"
+    page_text = " ".join(
+        paragraph
+        for section in page.get("sections", [])
+        for paragraph in section.get("paragraphs", [])
+    )
+    page_entity: dict[str, Any] = {
+        "@type": page.get("schema_type", "WebPage"),
+        "@id": page_id,
+        "url": current_url,
+        "name": f"{title} | {APP_NAME}",
+        "headline": title,
+        "description": page["description"],
+        "text": page_text,
+        "inLanguage": [lang, "en"] if lang != "en" else "en",
+        "isPartOf": {"@id": website_id},
+        "publisher": {"@id": publisher_id},
+        "dateModified": LEGAL_LAST_UPDATED.isoformat(),
+        "isAccessibleForFree": True,
+        "breadcrumb": {"@id": breadcrumb_id},
+        "mainEntityOfPage": current_url,
+    }
+    if lang != "en":
+        page_entity["isBasedOn"] = canonical
+    if slug == "contact":
+        page_entity["mainEntity"] = {
+            "@type": "ContactPoint",
+            "contactType": "customer support",
+            "email": CONTACT_EMAIL,
+            "availableLanguage": list(LANGUAGES.keys()),
+        }
+    graph = [
+        {
+            "@type": "Organization",
+            "@id": publisher_id,
+            "name": APP_NAME,
+            "url": root,
+            "email": CONTACT_EMAIL,
+            "logo": {"@type": "ImageObject", "url": f"{root}/icon-512.png", "width": 512, "height": 512},
+            "contactPoint": {
+                "@type": "ContactPoint",
+                "contactType": "customer support",
+                "email": CONTACT_EMAIL,
+                "url": f"{root}/en/contact",
+                "availableLanguage": list(LANGUAGES.keys()),
+            },
+            "publishingPrinciples": f"{root}/en/about",
+        },
+        {
+            "@type": "WebSite",
+            "@id": website_id,
+            "url": root,
+            "name": APP_NAME,
+            "publisher": {"@id": publisher_id},
+            "inLanguage": list(LANGUAGES.keys()),
+        },
+        page_entity,
+        {
+            "@type": "BreadcrumbList",
+            "@id": breadcrumb_id,
+            "itemListElement": [
+                {"@type": "ListItem", "position": 1, "name": APP_NAME, "item": root},
+                {"@type": "ListItem", "position": 2, "name": title, "item": current_url},
+            ],
+        },
+    ]
+    return {"@context": "https://schema.org", "@graph": graph}
+
+
+def legal_page_response(path_lang: str, legal_slug: str) -> Response:
+    if path_lang not in LANGUAGES or legal_slug not in LEGAL_PAGE_DEFINITIONS:
+        return plain_not_found()
+    page = dict(LEGAL_PAGE_DEFINITIONS[legal_slug])
+    page.setdefault("resources", [])
+    page.setdefault("email_cta", False)
+    ui = ui_text(path_lang)
+    title = ui.get(page["ui_key"], EN_TEXT.get(page["ui_key"], legal_slug.replace("-", " ").title()))
+    root = site_root()
+    current_url = f"{root}/{path_lang}/{legal_slug}"
+    canonical = f"{root}/en/{legal_slug}"
+    robots = "index,follow,max-image-preview:large,max-snippet:-1" if path_lang == "en" else "noindex,follow,max-image-preview:large,max-snippet:-1"
+    nonce = secrets.token_urlsafe(18)
+    legal_nav = [
+        {"slug": slug, "title": ui.get(LEGAL_PAGE_DEFINITIONS[slug]["ui_key"], slug.replace("-", " ").title())}
+        for slug in LEGAL_PAGE_SLUGS
+    ]
+    jsonld = legal_page_jsonld(path_lang, legal_slug, page, title, current_url, canonical)
+    rendered = LEGAL_PAGE_TEMPLATE.render(
+        lang=path_lang,
+        slug=legal_slug,
+        page=page,
+        title=title,
+        ui=ui,
+        app_name=APP_NAME,
+        root=root,
+        current_url=current_url,
+        canonical=canonical,
+        robots=robots,
+        nonce=nonce,
+        legal_css=LEGAL_CSS,
+        jsonld_json=safe_script_json(jsonld),
+        languages=[{"code": code, "name": info["name"], "native": info["native"]} for code, info in LANGUAGES.items()],
+        legal_nav=legal_nav,
+        contact_email=CONTACT_EMAIL,
+        last_updated=format_card_date(LEGAL_LAST_UPDATED, path_lang),
+        year=datetime.now(UTC).year,
+        root_json=safe_script_json(root),
+        slug_json=safe_script_json(legal_slug),
+    )
+    response = make_response(rendered)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    response.headers["Content-Language"] = path_lang
+    response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
+    response.headers["Link"] = f'<{canonical}>; rel="canonical", <{root}/en/privacy-policy>; rel="privacy-policy"'
+    response.headers["X-Robots-Tag"] = robots
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "form-action 'self' mailto:; img-src 'self' data:; font-src 'self' data:; "
+        f"style-src 'self' 'unsafe-inline' 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
+        f"script-src 'self' 'nonce-{nonce}'; script-src-attr 'none'; "
+        "connect-src 'self'; manifest-src 'self'; upgrade-insecure-requests"
+    )
+    return response
 
 
 def page_response(path_lang: str | None = None, place_slug: str | None = None, date_str: str | None = None) -> Response:
@@ -15932,6 +16697,22 @@ def current_panchang(path_lang: str, place_slug: str) -> Response:
     _tz_name, tz = safe_timezone(str(place["timezone"]))
     current_date = datetime.now(tz).date().isoformat()
     return redirect(f"/{path_lang}/panchang/{place_slug}/{current_date}", code=302)
+
+
+@app.get("/<path_lang>/<legal_slug>")
+def localized_legal_page(path_lang: str, legal_slug: str) -> Response:
+    return legal_page_response(path_lang, legal_slug)
+
+
+@app.get("/about")
+@app.get("/privacy-policy")
+@app.get("/terms-and-conditions")
+@app.get("/contact")
+@app.get("/disclaimer")
+@app.get("/cookie-policy")
+def english_legal_alias() -> Response:
+    legal_slug = request.path.strip("/")
+    return redirect(f"/en/{legal_slug}", code=308)
 
 
 @app.get("/api/panchang")
@@ -16341,14 +17122,18 @@ def sitemap_xml() -> Response:
 @app.get("/sitemap-static.xml")
 def sitemap_static_xml() -> Response:
     root = site_root()
+    static_urls = [root + "/"] + [f"{root}/en/{slug}" for slug in LEGAL_PAGE_SLUGS]
     entries = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-        '  <url>',
-        f'    <loc>{html.escape(root + "/", quote=True)}</loc>',
-        '  </url>',
-        '</urlset>',
     ]
+    for url in static_urls:
+        entries.extend([
+            '  <url>',
+            f'    <loc>{html.escape(url, quote=True)}</loc>',
+            '  </url>',
+        ])
+    entries.append('</urlset>')
     response = Response("\n".join(entries), mimetype="application/xml")
     response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
@@ -17116,6 +17901,8 @@ def openapi_document() -> Response:
             "title": f"{APP_NAME} API",
             "version": APP_VERSION,
             "description": "Machine-readable local Panchang timelines calculated with Lahiri ayanamsa and Swiss Ephemeris Moshier.",
+            "termsOfService": f"{root}/en/terms-and-conditions",
+            "contact": {"name": f"{APP_NAME} support", "url": f"{root}/en/contact", "email": CONTACT_EMAIL},
         },
         "servers": [{"url": root}],
         "paths": {
@@ -17214,6 +18001,12 @@ def llms_txt() -> Response:
 ## Primary pages
 - Homepage: {root}/
 - Canonical page pattern: {root}/{{language}}/panchang/{{place-slug}}/{{YYYY-MM-DD}}
+- About: {root}/en/about
+- Privacy Policy: {root}/en/privacy-policy
+- Terms & Conditions: {root}/en/terms-and-conditions
+- Contact: {root}/en/contact
+- Disclaimer: {root}/en/disclaimer
+- Cookie Policy: {root}/en/cookie-policy
 - Sitemap: {root}/sitemap.xml
 
 ## Machine-readable interfaces
