@@ -37,7 +37,7 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Iterable
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote_plus, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -87,7 +87,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=32 * 1024, PREFERRED_URL_SCHEME="https")
 
 APP_NAME = os.getenv("PANCHANG_APP_NAME", "Panchang")
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.1"
 
 # All public, shareable and crawler-facing URLs use the custom domain.  Render's
 # temporary hostname is intentionally never exposed in canonical, Open Graph,
@@ -2874,8 +2874,16 @@ def site_root() -> str:
 
 
 def canonical_url(context: dict[str, Any], lang: str | None = None) -> str:
+    """Return an evergreen URL for live Panchang pages and a dated URL for manual snapshots.
+
+    Search engines receive one stable, date-free URL per language and place. A
+    date remains in the canonical URL only when a visitor deliberately freezes
+    the Panchang with ``live=0`` or opens an explicit dated route.
+    """
     selected_lang = lang or context["lang"]
-    path = f"/{selected_lang}/panchang/{quote(context['slug'], safe='-')}/{context['date'].isoformat()}"
+    base_path = f"/{selected_lang}/panchang/{quote(context['slug'], safe='-')}"
+    use_evergreen_path = bool(context.get("canonical_undated", context.get("live", True)))
+    path = base_path if use_evergreen_path else f"{base_path}/{context['date'].isoformat()}"
     known = POPULAR_PLACES.get(context["slug"])
     query: dict[str, str] = {}
     if not known or abs(float(known["latitude"]) - context["latitude"]) > 0.01 or abs(float(known["longitude"]) - context["longitude"]) > 0.01:
@@ -2887,6 +2895,12 @@ def canonical_url(context: dict[str, Any], lang: str | None = None) -> str:
         }
         if context.get("country"):
             query["country"] = context["country"]
+    # A dated path is already an unambiguous snapshot identifier.  Do not add
+    # live/time parameters to its canonical URL: those parameters only change
+    # the selected highlight, while the page still represents the same local
+    # Panchang date.  This keeps all time variants consolidated under one clean
+    # canonical URL.  Custom-place coordinates remain because they identify the
+    # location represented by the page.
     return f"{site_root()}{path}" + (f"?{urlencode(query)}" if query else "")
 
 
@@ -16588,6 +16602,13 @@ def page_response(path_lang: str | None = None, place_slug: str | None = None, d
     if date_str and context["date"].isoformat() != date_str:
         return plain_not_found()
 
+    # A URL containing an explicit date is a fixed snapshot, even when an old
+    # bookmark does not include ``live=0``. Live pages use a stable date-free
+    # canonical URL and are the only Panchang pages submitted in sitemaps.
+    if date_str:
+        context["live"] = False
+    context["canonical_undated"] = bool(not date_str and context.get("live", True))
+
     data, seo, jsonld = build_payload(context)
     push_csrf = request.cookies.get(PUSH_CSRF_COOKIE) or secrets.token_urlsafe(24)
     vapid = push_vapid_config()
@@ -16691,12 +16712,45 @@ def dated_panchang(path_lang: str, place_slug: str, date_str: str) -> Response:
 
 @app.get("/<path_lang>/panchang/<place_slug>")
 def current_panchang(path_lang: str, place_slug: str) -> Response:
-    if path_lang not in LANGUAGES or place_slug not in POPULAR_PLACES:
+    """Serve the live Panchang at a stable URL and normalize dated aliases.
+
+    Supported dated aliases are redirected to the clean path form:
+    ``?date=2026-09-12`` and the legacy bare ``?2026-09-12`` both become
+    ``/.../2026-09-12``.  This prevents parameter variants from competing with
+    the canonical dated page.
+    """
+    if path_lang not in LANGUAGES:
         return plain_not_found()
-    place = POPULAR_PLACES[place_slug]
-    _tz_name, tz = safe_timezone(str(place["timezone"]))
-    current_date = datetime.now(tz).date().isoformat()
-    return redirect(f"/{path_lang}/panchang/{place_slug}/{current_date}", code=302)
+
+    requested_date = (request.args.get("date") or "").strip()
+    raw_query = request.query_string.decode("utf-8", "ignore")
+    if not requested_date and raw_query:
+        first_token = raw_query.split("&", 1)[0]
+        bare_token = unquote_plus(first_token).strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", bare_token):
+            requested_date = bare_token
+
+    if requested_date:
+        try:
+            normalized_date = date.fromisoformat(requested_date).isoformat()
+        except ValueError:
+            return plain_not_found()
+
+        params = request.args.to_dict(flat=True)
+        params.pop("date", None)
+        # Remove the nameless legacy date key produced by ``?YYYY-MM-DD``.
+        params.pop(requested_date, None)
+        params["live"] = "0"
+        target = f"/{path_lang}/panchang/{quote(place_slug, safe='-')}/{normalized_date}"
+        if params:
+            target += f"?{urlencode(params)}"
+        response = redirect(target, code=308)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    # page_response also accepts a custom slug when place/lat/lon/tz are
+    # supplied, which keeps shared auto-detected locations working.
+    return page_response(path_lang, place_slug)
 
 
 @app.get("/<path_lang>/<legal_slug>")
@@ -16871,7 +16925,10 @@ def search_redirect_response() -> Response:
     tz_name, tz = safe_timezone(str(selected.get("timezone") or "UTC"), "UTC")
     requested_date = safe_date(request.args.get("date"), datetime.now(tz).date())
     slug = str(selected.get("slug") or slugify_place(str(selected["name"])))
-    path = f"/{lang}/panchang/{quote(slug, safe='-')}/{requested_date.isoformat()}"
+    has_manual_selection = bool(request.args.get("date") or request.args.get("time"))
+    path = f"/{lang}/panchang/{quote(slug, safe='-')}"
+    if has_manual_selection:
+        path += f"/{requested_date.isoformat()}"
     params: dict[str, str] = {}
     if slug not in POPULAR_PLACES:
         params = {
@@ -16882,9 +16939,9 @@ def search_redirect_response() -> Response:
         }
         if selected.get("country"):
             params["country"] = str(selected["country"])
-    if request.args.get("time"):
-        params["time"] = safe_time(request.args.get("time"), dt_time(12, 0)).strftime("%H:%M")
+    if has_manual_selection:
         params["live"] = "0"
+        params["time"] = safe_time(request.args.get("time"), datetime.now(tz).timetz().replace(tzinfo=None)).strftime("%H:%M")
     target = path + (f"?{urlencode(params)}" if params else "")
     response = redirect(target, code=302)
     response.headers["Cache-Control"] = "no-store"
@@ -17095,9 +17152,8 @@ def robots_txt() -> Response:
 
 @app.get("/sitemap.xml")
 def sitemap_xml() -> Response:
-    """Return a sitemap index with one child sitemap per language."""
+    """Return a date-free sitemap index with one child sitemap per language."""
     root = site_root()
-    today = datetime.now(IST).date().isoformat()
     entries = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
@@ -17109,7 +17165,6 @@ def sitemap_xml() -> Response:
         entries.extend([
             '  <sitemap>',
             f'    <loc>{html.escape(root + f"/sitemap-{lang}.xml", quote=True)}</loc>',
-            f'    <lastmod>{today}</lastmod>',
             '  </sitemap>',
         ])
     entries.append('</sitemapindex>')
@@ -17142,7 +17197,12 @@ def sitemap_static_xml() -> Response:
 
 @app.get("/sitemap-<lang>.xml")
 def sitemap_language_xml(lang: str) -> Response:
-    """Return localized URLs plus reciprocal hreflang alternatives."""
+    """Return one evergreen URL per place with reciprocal hreflang links.
+
+    Dated Panchang snapshots remain available to visitors, but they are not
+    submitted through XML sitemaps. This keeps the sitemap compact and avoids
+    creating a continually expanding set of calendar URLs.
+    """
     if lang not in LANGUAGES:
         return plain_not_found()
     root = site_root()
@@ -17150,28 +17210,22 @@ def sitemap_language_xml(lang: str) -> Response:
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
     ]
-    # Generate the current date window in each place's own timezone instead of
-    # assuming that every indexed city shares India's calendar date.
-    for slug, place in POPULAR_PLACES.items():
-        _tz_name, place_tz = safe_timezone(str(place["timezone"]))
-        place_today = datetime.now(place_tz).date()
-        dates = [place_today - timedelta(days=1)] + [place_today + timedelta(days=offset) for offset in range(0, 31)]
-        for day in dates:
-            loc = f"{root}/{lang}/panchang/{slug}/{day.isoformat()}"
-            entries.extend([
-                "  <url>",
-                f"    <loc>{html.escape(loc, quote=True)}</loc>",
-            ])
-            for alternate_lang in LANGUAGES:
-                alternate_url = f"{root}/{alternate_lang}/panchang/{slug}/{day.isoformat()}"
-                entries.append(
-                    f'    <xhtml:link rel="alternate" hreflang="{alternate_lang}" href="{html.escape(alternate_url, quote=True)}" />'
-                )
-            english_url = f"{root}/en/panchang/{slug}/{day.isoformat()}"
-            entries.extend([
-                f'    <xhtml:link rel="alternate" hreflang="x-default" href="{html.escape(english_url, quote=True)}" />',
-                "  </url>",
-            ])
+    for slug in POPULAR_PLACES:
+        loc = f"{root}/{lang}/panchang/{slug}"
+        entries.extend([
+            "  <url>",
+            f"    <loc>{html.escape(loc, quote=True)}</loc>",
+        ])
+        for alternate_lang in LANGUAGES:
+            alternate_url = f"{root}/{alternate_lang}/panchang/{slug}"
+            entries.append(
+                f'    <xhtml:link rel="alternate" hreflang="{alternate_lang}" href="{html.escape(alternate_url, quote=True)}" />'
+            )
+        english_url = f"{root}/en/panchang/{slug}"
+        entries.extend([
+            f'    <xhtml:link rel="alternate" hreflang="x-default" href="{html.escape(english_url, quote=True)}" />',
+            "  </url>",
+        ])
     entries.append("</urlset>")
     response = Response("\n".join(entries), mimetype="application/xml")
     response.headers["Cache-Control"] = "public, max-age=3600"
@@ -18000,7 +18054,8 @@ def llms_txt() -> Response:
 
 ## Primary pages
 - Homepage: {root}/
-- Canonical page pattern: {root}/{{language}}/panchang/{{place-slug}}/{{YYYY-MM-DD}}
+- Live canonical page pattern: {root}/{{language}}/panchang/{{place-slug}}
+- Optional manual snapshot pattern: {root}/{{language}}/panchang/{{place-slug}}/{{YYYY-MM-DD}}?live=0&time=HH%3AMM
 - About: {root}/en/about
 - Privacy Policy: {root}/en/privacy-policy
 - Terms & Conditions: {root}/en/terms-and-conditions
@@ -18024,7 +18079,7 @@ Lahiri ayanamsa; Swiss Ephemeris Moshier planetary positions; local astronomical
 {languages}
 
 ## Citation guidance
-When quoting data, include the place, coordinates, IANA timezone, local date/time, language, generated_at timestamp and canonical URL or API URL. Prefer the canonical dated page as the human-facing citation.
+When quoting data, include the place, coordinates, IANA timezone, local date/time, language, generated_at timestamp and canonical URL or API URL. Prefer the stable place page for live data and a dated manual snapshot only when a fixed historical or future instant is required.
 """
     response = Response(body, mimetype="text/plain")
     response.headers["Cache-Control"] = "public, max-age=3600"
