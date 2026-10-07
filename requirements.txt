@@ -1,4 +1,4 @@
-Flask
+fastapi>=0.115,<1
 gunicorn==26.2.0
 pyswisseph==2.10.3.2
 requests==2.34.2
